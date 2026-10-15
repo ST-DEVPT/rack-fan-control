@@ -134,6 +134,24 @@ class HTTP(Base):
         self.assertEqual(self.post("/api/settings?server=rack-b", {"fixed_speed": 500})[0], 400)
         self.assertEqual(self.req("POST", "/api/settings", {"mode": "auto"})[0], 401)
         self.assertEqual(self.post("/api/settings?server=rack-b", {"x": "y" * 20000})[0], 413)
+        self.assertEqual(self.post("/api/settings?server=rack-b", {"mode": "auto"},
+                                   headers={"Content-Type": "application/json; charset=utf-8"})[0], 200)
+
+    def test_a_failing_route_answers_500_not_a_dropped_connection(self):
+        # behind a reverse proxy a dropped connection is an opaque 502 with the cause nowhere
+        srv = SERVERS["rack-b"]
+
+        def broken(*_):
+            raise OSError(28, "No space left on device")
+        srv.save_settings = broken
+        try:
+            with self.assertLogs("fanctl.web", "ERROR") as logged:
+                st, _, data = self.post("/api/settings?server=rack-b", {"mode": "auto"})
+        finally:
+            del srv.save_settings
+        self.assertEqual(st, 500)
+        self.assertIn("No space left on device", json.loads(data)["error"])
+        self.assertIn("Traceback", "\n".join(logged.output))
 
     # ---- alerts
 
@@ -232,6 +250,14 @@ class HTTP(Base):
                 r = c.getresponse()
                 self.assertIn(r.status, (400, 413))
                 c.close()
+
+    def test_refusals_read_the_body_first(self):
+        # a refusal sent with the body still unread resets the connection: a proxy reports 502
+        for headers, status in (({"Content-Type": "text/plain"}, 415), ({"Origin": "http://evil.example"}, 403)):
+            with self.subTest(status=status):
+                st, _, data = self.req("POST", "/api/login", {"password": "x" * 5000}, headers)
+                self.assertEqual(st, status)
+                self.assertIn("error", json.loads(data))
 
     def test_backup_carries_the_smart_map(self):
         srv = SERVERS["rack-a"]
@@ -529,3 +555,24 @@ class Scan(Base):
         self.assertEqual((st, [f["host"] for f in json.loads(data)["found"]]), (200, ["10.0.0.2"]))
         self.assertEqual(self.post("/api/servers/scan", {"range": "1.1.1.0/24"})[0], 400)
         self.assertEqual(self.req("POST", "/api/servers/scan", {"range": "10.0.0.0/30"})[0], 401)
+
+
+class Busy(unittest.TestCase):
+    def test_a_full_server_answers_503_instead_of_dropping_the_connection(self):
+        import app
+        httpd = app.BoundedServer(("127.0.0.1", 0), web.Handler)
+        httpd.WAIT = 0.2
+        httpd.slots = threading.BoundedSemaphore(1)
+        httpd.slots.acquire()  # every slot taken by slow requests
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+            c.request("GET", "/healthz")
+            r = c.getresponse()
+            self.assertEqual((r.status, r.getheader("Retry-After")), (503, "5"))
+            self.assertIn("try again", json.loads(r.read())["error"])
+            c.close()
+        finally:
+            httpd.slots.release()
+            httpd.shutdown()
+            httpd.server_close()

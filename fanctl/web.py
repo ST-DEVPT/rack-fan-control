@@ -546,9 +546,12 @@ class Handler(BaseHTTPRequestHandler):
     def who(self):
         return f"{self.role()} at {self.client()}"
 
+    answered = False  # the status line went out: past it, an error can only close the connection
+
     def send(self, code, body=b"", ctype="application/json", headers=(), frame=False):
         if not isinstance(body, bytes):
             body = json.dumps(body).encode()
+        self.answered = True
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -605,7 +608,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(401, {"error": "sign in required"})
             if access == "admin" and self.role() != "admin":
                 return self.send(403, {"error": "this account can only look"})
-            return fn(self, *match.groups())
+            try:
+                return fn(self, *match.groups())
+            except Exception as e:
+                # an answer, never a dropped connection: behind a reverse proxy that shows up as an
+                # opaque 502, with the cause nowhere. The traceback goes to the log.
+                log.exception("%s %s failed", method, self.route)
+                if self.answered:  # too late for a status; the connection just closes
+                    return None
+                return self.send(500, {"error": f"internal error: {e!r}; the log has the details"})
         return self.send(404, {"error": "not found"})
 
     def do_HEAD(self):
@@ -617,21 +628,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.parse()
-        # JSON only: a cross-site form cannot send this content type without a CORS preflight
-        if self.headers.get("Content-Type") != "application/json":
-            return self.send(415, {"error": "expected application/json"})
-        origin = self.headers.get("Origin")
-        hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
-        if origin and urlsplit(origin).netloc not in hosts:
-            return self.send(403, {"error": "cross-origin request refused"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self.send(400, {"error": "bad Content-Length"})
         if not 0 <= length <= (1_000_000 if self.route == "/api/import" else 10000):  # backups can be large
             return self.send(413, {"error": "request too large"})
+        # read before any refusal: closing a socket with unread data resets the connection, which a
+        # reverse proxy reports as 502 instead of passing the refusal on
+        raw = self.rfile.read(length)
+        # JSON only: a cross-site form cannot send this content type without a CORS preflight
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            return self.send(415, {"error": "expected application/json"})
+        origin = self.headers.get("Origin")
+        hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
+        if origin and urlsplit(origin).netloc not in hosts:
+            return self.send(403, {"error": "cross-origin request refused"})
         try:
-            self.body = json.loads(self.rfile.read(length) or b"{}")
+            self.body = json.loads(raw or b"{}")
             if not isinstance(self.body, dict):
                 raise ValueError("expected a JSON object")
         except ValueError as e:

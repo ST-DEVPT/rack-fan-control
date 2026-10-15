@@ -3,6 +3,17 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.6.1] - 2026-10-16
+
+- **Minimum speed goes down to 0 %** (it stopped at 10 %): fixed, curve and smart modes can run the fans as
+  slowly as the hardware allows. Lowering it still asks first, and a stopped fan still trips the failsafe.
+- **A request that fails inside Fan Control answers 500 with the reason**, and the log gets the traceback.
+  Before, the connection just closed, which a reverse proxy (Nginx Proxy Manager and the like) shows as an
+  opaque 502 with the cause nowhere.
+- **Refusals no longer reset the connection**: the request body is read before a 403, 415 or 400, so a proxy
+  passes the refusal on instead of a 502. A server busy with 64 requests answers 503 instead of dropping
+  the 65th. `Content-Type: application/json; charset=utf-8` is accepted.
+
 ## [2.6.0] - 2026-10-06
 
 Engineering, from an independent review: what keeps the other five areas true over time.

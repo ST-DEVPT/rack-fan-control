@@ -93,9 +93,7 @@ class Server:
             saved = {}
         if saved.get("mode") == "dell":  # 1.x name of automatic mode
             saved["mode"] = "auto"
-        # 2.3 raised the floors: older files are brought inside them rather than refused
-        if type(saved.get("min_speed")) is int and saved["min_speed"] < 10:
-            saved["min_speed"] = 10
+        # 2.3 lowered the failsafe's ceiling: older files are brought inside it rather than refused
         if type(saved.get("failsafe_temp")) in (int, float) and saved["failsafe_temp"] > 90:
             saved["failsafe_temp"] = 90
         try:

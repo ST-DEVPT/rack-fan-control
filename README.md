@@ -248,9 +248,10 @@ The BMC takes over, whatever the mode, when:
 
 Once a limit trips, the BMC keeps the fans for at least 5 minutes, and manual control resumes only when
 things are 3 °C below the limit, starting from 50 % and easing down; so the fans don't flap at the edge.
-Fans never run below the **minimum speed** (20 % by default, 10 % at the lowest: cards without a sensor,
-HBAs, NICs, NVMe drives and GPUs, are cooled by that airflow alone). Supermicro boards never go below 25 %,
-where their fans would read under the BMC's lower critical RPM. The failsafe can be set up to 90 °C.
+Fans never run below the **minimum speed**: 20 % by default, anything from 0 % up. Cards without a sensor
+(HBAs, NICs, NVMe drives, GPUs) are cooled by that airflow alone, so lowering it asks for confirmation, and a
+fan that stops while the others spin still trips the failsafe. Supermicro boards never go below 25 %, where
+their fans would read under the BMC's lower critical RPM. The failsafe can be set up to 90 °C.
 
 When the controller hands a Supermicro back, the BMC gets the fan mode it had before (Standard,
 Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` every server is released at

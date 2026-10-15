@@ -187,8 +187,8 @@ def validate_settings(new, current):
     s["curve"] = sorted([round(p[0]), round(p[1])] for p in c)
     if s["pcie_cooling"] not in (None, True, False):
         raise ValueError("pcie_cooling must be null, true or false")
-    if not (type(s["min_speed"]) is int and 10 <= s["min_speed"] <= 60):
-        raise ValueError("minimum speed must be a whole number from 10 to 60")
+    if not (type(s["min_speed"]) is int and 0 <= s["min_speed"] <= 60):
+        raise ValueError("minimum speed must be a whole number from 0 to 60")
     if s["exhaust_limit"] is not None and not (type(s["exhaust_limit"]) in (int, float) and 30 <= s["exhaust_limit"] <= 90):
         raise ValueError("exhaust limit must be between 30 and 90 °C, or empty to turn it off")
     if not (type(s["threshold_margin"]) in (int, float) and 0 <= s["threshold_margin"] <= 20):

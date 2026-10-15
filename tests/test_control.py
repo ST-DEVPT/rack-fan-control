@@ -85,6 +85,10 @@ class Protection(unittest.TestCase):
     def test_minimum_speed(self):
         self.assertEqual(decide({**BASE, "mode": "fixed", "fixed_speed": 5, "min_speed": 12}, 40)[1], 12)
         self.assertEqual(decide({**BASE, "mode": "curve", "min_speed": 15}, 20)[1], 15)
+        low = validate_settings({"mode": "fixed", "fixed_speed": 5, "min_speed": 0}, dict(DEFAULT_SETTINGS))
+        self.assertEqual(decide({**BASE, **low}, 40)[1], 5)  # below 10 % when asked for
+        with self.assertRaises(ValueError):
+            validate_settings({"min_speed": -1}, dict(DEFAULT_SETTINGS))
 
     def test_new_settings_are_validated(self):
         for bad in ({"min_speed": 70}, {"exhaust_limit": 10}, {"threshold_margin": 50},

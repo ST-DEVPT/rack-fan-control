@@ -450,7 +450,7 @@ $$("[data-quiet]").forEach(b => b.onclick = () => { draft.quiet = { ...draft.qui
 $("#quiet-start").onchange = e => { if (e.target.value) { draft.quiet = { ...draft.quiet, start: e.target.value }; touch(); } };
 $("#quiet-end").onchange = e => { if (e.target.value) { draft.quiet = { ...draft.quiet, end: e.target.value }; touch(); } };
 $("#quiet-max").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 0 && v <= 100) { draft.quiet = { ...draft.quiet, max_speed: v }; touch(); } };
-$("#min-speed").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 10 && v <= 60) { draft.min_speed = v; touch(); } };
+$("#min-speed").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 0 && v <= 60) { draft.min_speed = v; touch(); } };
 $("#exhaust-limit").oninput = e => {
   const raw = e.target.value.trim(), v = fromT(+raw);
   if (raw === "") { draft.exhaust_limit = null; touch(); } else if (v >= 30 && v <= 90) { draft.exhaust_limit = v; touch(); }
