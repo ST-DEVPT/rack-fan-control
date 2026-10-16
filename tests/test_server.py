@@ -281,6 +281,106 @@ class FailSafe(unittest.TestCase):
         self.assertIn("Supermicro floor 25%", srv.state["reason"])
 
 
+class Calibration(unittest.TestCase):
+    OK = FailSafe.OK
+
+    def tearDown(self):
+        for f in list(DATA.glob("settings-cal-*.json")) + list(DATA.glob("calibration-cal-*.json")):
+            f.unlink()
+
+    def calibrate(self, srv, rpm_at, cpu=None, cycles=100):
+        """Cycles until the calibration ends, each fan reading rpm_at(step speed, fan number)."""
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.CALIB_SETTLE = 0  # no time passes in a test
+        self.assertIsNone(srv.start_calibration("tester"))
+        for n in range(cycles):
+            if not srv.calibrating():
+                break
+            pct = srv.calib["steps"][srv.calib["i"]]
+            temps = [("CPU 1", cpu(n) if cpu else 50, True)] + self.OK[1:]
+            srv.answers = [reading(temps, [{"name": f"Fan{i}", "rpm": rpm_at(pct, i), "pct": None, "ok": True}
+                                           for i in (1, 2)])]
+            srv.cycle()
+        return srv.calib
+
+    def test_measures_every_step_and_suggests_a_minimum(self):
+        srv = Scripted("cal-full")
+        c = self.calibrate(srv, lambda pct, i: max(2000, 1000 + 50 * pct))  # under 20 % no slower
+        self.assertEqual(c["status"], "done")
+        self.assertEqual([r["pct"] for r in c["results"]], list(Server.CALIB_STEPS))
+        self.assertEqual(c["results"][0]["fans"], {"Fan1": 6000, "Fan2": 6000})
+        self.assertEqual((c["floor"], c["suggested"], c["fan_watts"]), (20, 20, 0))  # the power draw held
+        self.assertEqual(sorted(set(srv.calls)), [0, 5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100])  # every step sent
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        self.assertEqual(srv.calls[-1], 30)                            # then the settings again
+        self.assertEqual(Server({"id": "cal-full", "name": "x", "driver": "demo"}).calib["suggested"], 20)  # kept
+
+    def test_a_fan_that_stops_trips_the_failsafe_and_the_steps_above_still_count(self):
+        srv = Scripted("cal-stall")
+        c = self.calibrate(srv, lambda pct, i: 0 if i == 2 and pct < 10 else 2000 + 40 * pct)
+        self.assertEqual((c["status"], c["at"]), ("stopped", 5))
+        self.assertEqual(c["reason"], "the failsafe took over (fan Fan2 failed)")
+        self.assertEqual((c["suggested"], srv.calls[-1]), (10, "auto"))
+
+    def test_stops_when_the_cpu_warms(self):
+        srv = Scripted("cal-warm")
+        c = self.calibrate(srv, lambda pct, i: 2000 + 40 * pct, cpu=lambda n: 50 + n)
+        self.assertEqual((c["status"], c["reason"]), ("stopped", "the CPU warmed by 10°C"))
+        self.assertIsNone(c["suggested"])
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        self.assertEqual(srv.calls[-1], 30)
+
+    def test_refused_when_it_cannot_be_trusted(self):
+        dry = Scripted("cal-dry", {"mode": "fixed", "fixed_speed": 30, "dry_run": True})
+        dry.answers = [reading(self.OK)]
+        dry.cycle()
+        self.assertIn("dry run", dry.start_calibration())
+        hot = Scripted("cal-hot")
+        hot.answers = [reading([("CPU 1", 70, True)])]
+        hot.cycle()
+        self.assertIn("10°C or more below the failsafe", hot.start_calibration())
+        self.assertFalse(hot.calibrating())
+
+    def test_a_restart_in_the_middle_counts_as_stopped(self):
+        write_json(DATA / "calibration-cal-cut.json", {"status": "running", "results": [], "samples": [{}]})
+        c = Server({"id": "cal-cut", "name": "x", "driver": "demo"}).calib
+        self.assertEqual((c["status"], c["reason"]), ("stopped", "Fan Control restarted"))
+
+
+class HandOver(unittest.TestCase):
+    def tearDown(self):
+        for f in list(DATA.glob("settings-ho-*.json")) + list(DATA.glob("handover-ho-*.json")):
+            f.unlink()
+
+    def test_the_bmc_has_the_fans_until_the_time_is_up(self):
+        import time
+        srv = Scripted("ho-a")
+        srv.answers = [reading(FailSafe.OK)]
+        srv.cycle()
+        srv.hand_over(60, "tester")
+        srv.cycle()
+        self.assertEqual((srv.calls[-1], srv.state["effective"], srv.state["failsafe"]), ("auto", "auto", False))
+        self.assertIn("handed to the BMC until", srv.state["reason"])
+        self.assertIsNotNone(Server({"id": "ho-a", "name": "x", "driver": "demo"}).handed_until)  # a restart keeps it
+        self.assertIn("handed to the BMC", srv.start_calibration())
+        srv.handed_until = time.time() - 1                            # the hour is up
+        srv.cycle()
+        self.assertEqual(srv.calls[-1], 30)
+        self.assertIn("The hand-over to the BMC ended; control resumes", [e["msg"] for e in srv.events])
+
+    def test_taken_back_early(self):
+        srv = Scripted("ho-b")
+        srv.answers = [reading(FailSafe.OK)]
+        srv.hand_over(240)
+        srv.hand_over(0, "tester")
+        srv.cycle()
+        self.assertEqual((srv.handed_until, srv.calls[-1]), (None, 30))
+        self.assertFalse(srv.handed_file.exists())
+
+
 class Shutdown(unittest.TestCase):
     def test_all_servers_released_together(self):
         import time as t

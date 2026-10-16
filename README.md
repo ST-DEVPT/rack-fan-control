@@ -191,6 +191,8 @@ The 1.x variables still work and keep their settings: `IDRAC_HOST`, `IDRAC_USERN
 | `history-<server>.json` | Three hours of readings, seven days of 5-minute averages, and the events |
 | `alerts.json` | Alert settings, including the Discord webhook and the ntfy, Gotify and webhook addresses and tokens (file mode 600, never sent to the browser) |
 | `smart-<server>.json` | What smart mode learned: the fan speed each heat load needs |
+| `calibration-<server>.json` | The last fan calibration: RPM and power draw at each speed |
+| `handover-<server>.json` | Until when the fans are handed to the BMC, while they are |
 | `widget.json` | Which fields widgets may show |
 | `tokens.json` | Widget and metrics tokens, as SHA-256 hashes (file mode 600) |
 | `report-state.json` | Which Discord message the status card is edited into |
@@ -292,6 +294,24 @@ example *Weekend*, Saturday and Sunday all day, at most 30 %; or *Office hours*,
 18:00, smart target 55 °C. A profile from 22:00 to 06:00 runs into the next morning; 00:00 to 00:00 is the
 whole day. When several are in force, the lowest cap and the lowest target win, together with quiet hours.
 
+### Fan calibration
+
+**Calibrate fans**, under the server's fan list, finds what the minimum speed is best set to. It steps the
+fans from 100 % down to 0 % (12 steps, about 6 minutes, loud at first), measures each fan's RPM and the
+server's power draw at every step, and draws the curve. It then says below which speed the fans turn no
+slower (many fans have a floor of their own, so a lower setting only adds risk), the lowest speed at which
+every fan kept turning, and how many watts the fans cost at full speed; **Use N % as minimum speed** puts
+that into the settings. Every protection stays on while it runs. The failsafe, a fan that stops, a BMC that
+ignores a command, the CPU warming by 10 °C, a dry run or a hand-over stop it, and the steps measured
+until then still count. Quiet hours do not cap it: it was started by hand. It needs fans that report RPM.
+
+### Handing the fans to the BMC for a while
+
+Under **Apply**: hand the fans to the BMC for 1, 4 or 12 hours, for maintenance, a firmware update or a
+stress test, and control comes back on its own at the end (or with **Take back now**). It is kept in the
+data folder, so a restart neither cuts it short nor makes it last for ever. The API takes any time up to a
+week: `POST /api/handover?server=<id>` with `{"minutes": 90}`, and `{"minutes": 0}` to take them back.
+
 ### A starting point
 
 For a quiet homelab server with Xeon E5 processors, the **Quiet** preset (35 °C → 12 %, 45 → 15, 55 → 22,
@@ -350,6 +370,10 @@ on Discord only.
 ## Integrations
 
 Each has its own page in the sidebar, with the snippets filled in for your setup.
+
+**History as CSV**: the **CSV** button next to the chart's time range downloads that range for a
+spreadsheet: every reading up to 3 hours, 5-minute averages beyond (`GET /api/history.csv?server=<id>&seconds=86400`,
+any signed-in account).
 
 **Prometheus**: create a metrics token on the Prometheus page (or set `METRICS_TOKEN`); the page shows the
 scrape job to paste and the live `/metrics` output.

@@ -291,7 +291,7 @@ class HTTP(Base):
         st, h, _ = self.req("POST", "/api/login", {"password": "lookonly"})
         viewer = {"Cookie": h["Set-Cookie"].split(";")[0]}
         concrete = lambda p: (p.pattern.replace(r"\Z", "").replace("([a-z0-9-]+)", "rack-a")  # noqa: E731
-                              .replace("(/delete)?", "").replace("(.+)", "x"))
+                              .replace("(/delete)?", "").replace("(.+)", "x").replace(chr(92) + ".", "."))
         checked = 0
         for method, pattern, access, _ in web.ROUTES:
             if access == "public":
@@ -304,6 +304,43 @@ class HTTP(Base):
                 self.assertEqual(st, 403, f"{method} {path} as a viewer")
             checked += 1
         self.assertGreater(checked, 25)
+
+    def test_history_csv(self):
+        st, h, data = self.get("/api/history.csv?server=rack-a&seconds=3600")
+        self.assertEqual((st, h["Content-Type"]), (200, "text/csv; charset=utf-8"))
+        self.assertIn('filename="rack-a-history.csv"', h["Content-Disposition"])
+        rows = data.decode().splitlines()
+        self.assertEqual(rows[0].split(",")[:3], ["time", "cpu_c", "cpu_max_c"])
+        self.assertGreater(len(rows), 1)
+        self.assertEqual(self.get("/api/history.csv?server=rack-a&seconds=x")[0], 400)
+
+    def test_calibration_starts_and_stops(self):
+        srv = SERVERS["rack-a"]
+        try:
+            self.assertEqual(self.post("/api/calibrate?server=rack-a", {})[0], 200)
+            st, _, data = self.post("/api/calibrate?server=rack-a", {})
+            self.assertEqual((st, json.loads(data)["error"]), (409, "a calibration is already running"))
+            self.assertEqual(json.loads(self.get("/api/state?server=rack-a")[2])["calibration"]["status"], "running")
+            self.assertEqual(self.post("/api/calibrate?server=rack-a", {"action": "stop"})[0], 200)
+            c = json.loads(self.get("/api/state?server=rack-a")[2])["calibration"]
+            self.assertEqual(c["status"], "stopped")
+            self.assertTrue(c["reason"].startswith("stopped by admin at "))
+        finally:
+            srv.calib = None
+            srv.calib_file.unlink(missing_ok=True)
+
+    def test_handover(self):
+        srv = SERVERS["rack-a"]
+        try:
+            st, _, data = self.post("/api/handover?server=rack-a", {"minutes": 60})
+            self.assertEqual(st, 200)
+            self.assertAlmostEqual(json.loads(data)["handed_until"], time.time() + 3600, delta=5)
+            self.assertIsNotNone(json.loads(self.get("/api/state?server=rack-a")[2])["handed_until"])
+            for bad in (-1, 99999, "60", 1.5):
+                self.assertEqual(self.post("/api/handover?server=rack-a", {"minutes": bad})[0], 400)
+            self.assertEqual(json.loads(self.post("/api/handover?server=rack-a", {"minutes": 0})[2])["handed_until"], None)
+        finally:
+            srv.hand_over(0)
 
     def test_viewers_cannot_read_bmc_accounts(self):
         st, h, _ = self.req("POST", "/api/login", {"password": "lookonly"})

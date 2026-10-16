@@ -277,6 +277,12 @@ function renderServer() {
     <td class="bar"><div class="meter"><i style="width:${clamp(pct ?? 0, 0, 100)}%"></i></div></td>
     <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}</td></tr>`;
   }).join("") || '<tr class="empty"><td colspan="3">No readings</td></tr>';
+  renderCalib();
+  const handed = s.handed_until > Date.now() / 1000;
+  $("#ho-text").textContent = handed ? `The BMC has the fans until ${time(s.handed_until)}.` : "Hand the fans to the BMC for";
+  $("#ho-btns").hidden = handed;
+  $("#ho-end").hidden = !handed;
+  $("#csv").href = `/api/history.csv?server=${encodeURIComponent(s.id)}&seconds=${range}`;
   $("#temp-count").textContent = sens.temps.length ? `${sens.temps.length} sensors` : "";
   const pos = v => clamp((v - T_MIN) / (T_MAX - T_MIN) * 100, 2, 100);
   $("#temps").innerHTML = sens.temps.map(t => {
@@ -437,6 +443,67 @@ $("#smart-forget").onclick = async () => {
   server.smart_map = [];
   renderSmart();
   toast("Smart mode starts learning afresh");
+};
+
+// fan calibration: start it, follow it, and use what it found
+const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
+function renderCalib() {
+  const c = server.calibration, res = c?.results || [], running = c?.status === "running";
+  $("#calib").hidden = !server.control || !(server.sensors?.fans || []).some(f => f.rpm != null);
+  $("#calib-start").hidden = running;
+  $("#calib-stop").hidden = !running;
+  const use = !running && c?.suggested != null && c.suggested !== draft.min_speed;
+  $("#calib-use").hidden = !use;
+  if (use) $("#calib-use").textContent = `Use ${c.suggested} % as minimum speed`;
+  const when = c?.ended && new Date(c.ended * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+  $("#calib-text").textContent = !c ? CALIB_HELP
+    : running ? `Calibrating: step ${c.i + 1} of ${c.steps.length}, fans at ${c.steps[c.i]} %.`
+    : c.status === "done" ? (c.suggested == null ? `Calibrated on ${when}. No speed kept every fan turning.`
+      : `Calibrated on ${when}. ${c.floor > res.at(-1).pct ? `Below ${c.floor} % the fans turn no slower.` : "The fans slow down at every step."} Suggested minimum speed: ${c.suggested} %.`)
+    : `Stopped at ${c.at} %: ${c.reason}.` + (c.suggested != null ? ` Every fan kept turning down to ${c.suggested} %.` : "");
+  const power = !running && c?.fan_watts >= 5;  // under that, the readings' own noise
+  $("#calib-power").hidden = !power;
+  if (power) $("#calib-power").textContent = `At 100 % the fans draw about ${c.fan_watts} W more than at ${res.at(-1).pct} %.`;
+  $("#calib-chart").hidden = res.length < 2;
+  if (res.length < 2) return;
+  // RPM by speed, measured; a hollow dot where a fan stood still
+  const W = 400, H = 140, pad = { l: 42, r: 12, t: 10, b: 22 };
+  const top = Math.ceil(Math.max(...res.map(r => r.rpm)) * 1.1 / 1000) * 1000;
+  const x = p => pad.l + p / 100 * (W - pad.l - pad.r), y = v => pad.t + (1 - v / top) * (H - pad.t - pad.b);
+  let g = "";
+  for (const v of [0, top / 2, top]) g += `<line class="g" x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}"/><text x="${pad.l - 6}" y="${y(v) + 3.5}" text-anchor="end">${v}</text>`;
+  for (const p of [0, 25, 50, 75, 100]) g += `<text x="${x(p)}" y="${H - 6}" text-anchor="middle">${p}</text>`;
+  const pts = [...res].sort((a, b) => a.pct - b.pct);
+  g += `<polyline class="line" points="${pts.map(r => `${x(r.pct).toFixed(1)},${y(r.rpm).toFixed(1)}`).join(" ")}"/>`;
+  g += pts.map(r => `<circle class="dot-pt${r.ok ? "" : " bad"}" cx="${x(r.pct).toFixed(1)}" cy="${y(r.rpm).toFixed(1)}" r="3"><title>${r.pct} %: ${r.rpm} RPM${r.watts != null ? `, ${r.watts} W` : ""}</title></circle>`).join("");
+  if (c.suggested != null) g += `<line class="fs" x1="${x(c.suggested)}" x2="${x(c.suggested)}" y1="${pad.t}" y2="${H - pad.b}"/>`;
+  $("#calib-svg").innerHTML = g;
+}
+$("#calib-start").onclick = async () => {
+  if (!confirm(translate("Calibrate the fans? They run from 100 % down to 0 % for about 6 minutes, loud at first."))) return;
+  const r = await api("/api/calibrate?server=" + encodeURIComponent(server.id), {});
+  if (!r.ok) return toast("Could not start: " + await failure(r), true);
+  toast("Calibration started");
+  setTimeout(pollServer, 800);
+};
+$("#calib-stop").onclick = async () => {
+  const r = await api("/api/calibrate?server=" + encodeURIComponent(server.id), { action: "stop" });
+  if (!r.ok) return toast(await failure(r), true);
+  setTimeout(pollServer, 800);
+};
+// maintenance, a stress test: the BMC keeps the fans for a while, then control comes back on its own
+async function handOver(minutes) {
+  const r = await api("/api/handover?server=" + encodeURIComponent(server.id), { minutes });
+  if (!r.ok) return toast(await failure(r), true);
+  toast(minutes ? "Fans handed to the BMC" : "Fans taken back");
+  setTimeout(pollServer, 800);
+}
+$$("[data-ho]").forEach(b => b.onclick = () => handOver(+b.dataset.ho));
+$("#ho-end").onclick = () => handOver(0);
+$("#calib-use").onclick = () => {
+  draft.min_speed = server.calibration.suggested;
+  touch();
+  toast(`Minimum speed set to ${draft.min_speed} %. Apply to use it`);
 };
 
 $$(".seg button").forEach(b => b.onclick = () => { draft.mode = b.dataset.mode; touch(); });
@@ -688,6 +755,7 @@ $("#curve").addEventListener("dblclick", e => {
 $$(".tabs button").forEach(b => b.onclick = () => {
   range = +b.dataset.range;
   $$(".tabs button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  $("#csv").href = `/api/history.csv?server=${encodeURIComponent(server.id)}&seconds=${range}`;
   renderChart();
 });
 

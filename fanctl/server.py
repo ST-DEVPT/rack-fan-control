@@ -32,6 +32,8 @@ class Server:
         self.settings_file = DATA_DIR / ("settings.json" if cfg.get("legacy") else f"settings-{self.id}.json")
         self.history_file = DATA_DIR / f"history-{self.id}.json"
         self.smart_file = DATA_DIR / f"smart-{self.id}.json"  # what smart mode learned about this server
+        self.calib_file = DATA_DIR / f"calibration-{self.id}.json"  # the last fan calibration's results
+        self.handed_file = DATA_DIR / f"handover-{self.id}.json"  # fans left to the BMC for a while
         self.lock = threading.RLock()  # re-entrant: log() takes it, and is called with it held
         self.wake = threading.Event()
         self.stop = threading.Event()
@@ -43,6 +45,8 @@ class Server:
         self.smart = {}        # smart mode controller memory
         self.learned = self.load_learned()  # smart mode: heat load -> speed that held the target
         self.learned_saved = dict(self.learned)
+        self.calib = self.load_calibration()  # see start_calibration
+        self.handed_until = self.load_handover()  # see hand_over
         self.logged = None     # last speed written to the event log
         self.hot = False       # above the "running hot" alert threshold
         self.inlet_hot = False
@@ -155,6 +159,161 @@ class Server:
             pass
         self.log(f"Smart mode starts learning afresh{' (' + who + ')' if who else ''}")
 
+    # ---- hand-over: the fans left to the BMC for a while (maintenance, a stress test), then taken back
+
+    def load_handover(self):
+        h = read_json(self.handed_file, None, f"hand-over of {self.name}")
+        until = h.get("until") if isinstance(h, dict) else None
+        return until if type(until) in (int, float) and until > time.time() else None
+
+    def hand_over(self, minutes, who=""):
+        """Leave the fans to the BMC for this many minutes; 0 takes them back now. Kept on disk, so a
+        restart in the middle neither cuts it short nor makes it last for ever."""
+        until = round(time.time() + minutes * 60) if minutes else None
+        with self.lock:
+            was, self.handed_until = self.handed_until, until
+        by = f" by {who}" if who else ""
+        try:
+            if until:
+                write_json(self.handed_file, {"until": until, "by": who})
+            else:
+                self.handed_file.unlink(missing_ok=True)
+        except OSError as e:
+            log.error("could not save the hand-over: %s", e, extra={"server": self.id})
+        if until:
+            self.log(f"Fans handed to the BMC until {time.strftime('%H:%M', time.localtime(until))}{by}")
+        elif was:
+            self.log(f"Fans taken back from the BMC{by}")
+        self.wake.set()
+
+    # ---- fan calibration
+    #
+    # Runs the fans through CALIB_STEPS and measures what each speed gives: the RPM curve, the speed
+    # below which the fans turn no slower, and the lowest speed at which every fan spins; what the
+    # minimum speed is best set from. Every check stays on while it runs: the failsafe, the BMC's
+    # thresholds, failed fans, a BMC ignoring commands. Any of them, or the CPU warming by
+    # CALIB_WARMING, stops it, and normal control resumes. Fastest first: when a fan stops at a low
+    # step and the failsafe takes over, every step above it is already measured.
+
+    CALIB_STEPS = (100, 80, 60, 50, 40, 30, 25, 20, 15, 10, 5, 0)
+    CALIB_SETTLE = 15    # s for the fans to reach a new speed before it is measured
+    CALIB_SAMPLES = 3    # readings averaged at each step
+    CALIB_EVERY = 5      # s between readings while it runs
+    CALIB_WARMING = 10   # °C the CPU may warm before it stops
+    CALIB_STOPPED = 300  # RPM under which a fan counts as stopped (as failed_fans has it)
+
+    def load_calibration(self):
+        c = read_json(self.calib_file, None, f"fan calibration of {self.name}")
+        if not isinstance(c, dict) or not isinstance(c.get("results"), list):
+            return None
+        if c.get("status") == "running":  # the process stopped in the middle
+            c.update(status="stopped", reason="Fan Control restarted", samples=[])
+        return c
+
+    def calibrating(self):
+        return bool(self.calib) and self.calib.get("status") == "running"
+
+    def start_calibration(self, who=""):
+        """Start a calibration. Returns why it cannot start, or None."""
+        settings = self.settings()
+        with self.lock:
+            st = self.state
+            fans = (st["sensors"] or {}).get("fans", [])
+            why = ("this server is monitored only" if not self.control
+                   else "a calibration is already running" if self.calibrating()
+                   else "the fans are handed to the BMC; take them back first" if self.handed_until
+                   else "the BMC is not answering" if st["error"] or not st["sensors"]
+                   else "the server is powered off" if st["power"] == "off"
+                   else "dry run is on; turn it off first" if settings["dry_run"]
+                   else "the failsafe is in control" if st["failsafe"]
+                   else "no fan reports its RPM" if not any(f["rpm"] for f in fans)
+                   else "there is no CPU reading" if st["cpu_temp"] is None
+                   else f"the CPU is at {st['cpu_temp']:.0f}°C; calibrate when it is 10°C or more below the failsafe"
+                   if st["cpu_temp"] > settings["failsafe_temp"] - 10 else None)
+            if why:
+                return why
+            now = time.time()
+            floor = getattr(self.driver, "min_speed", 0)
+            self.calib = {"status": "running", "started": now, "by": who, "cpu": st["cpu_temp"],
+                          "steps": [p for p in self.CALIB_STEPS if p >= floor], "i": 0, "since": now,
+                          "samples": [], "results": [], "reason": "", "floor": None, "suggested": None}
+            self.smart = {}
+            minutes = round(len(self.calib["steps"]) * (self.CALIB_SETTLE + self.CALIB_SAMPLES * self.CALIB_EVERY) / 60)
+        self.log(f"Fan calibration started{' by ' + who if who else ''}: about {minutes} min")
+        self.wake.set()
+        return None
+
+    def calibration_step(self, failsafe, why_failsafe, cpu, sensors, power, dry, now):
+        """While a calibration runs: (speed, reason line) for this cycle. It measures the step the fans
+        are on, moves to the next one, and finishes or stops the calibration. None otherwise."""
+        with self.lock:
+            c = self.calib
+            if not self.calibrating():
+                return None
+            rpms = {f["name"]: [f["rpm"], f.get("ok", True)] for f in sensors["fans"] if f["rpm"] is not None}
+            why = (f"the failsafe took over ({why_failsafe})" if failsafe
+                   else "the fans were handed to the BMC" if self.handed_until
+                   else "the server powered off" if power == "off"
+                   else "dry run was turned on" if dry
+                   else "the CPU reading was lost" if cpu is None
+                   else f"the CPU warmed by {cpu - c['cpu']:.0f}°C" if cpu - c["cpu"] >= self.CALIB_WARMING
+                   else "the fans stopped reporting their RPM" if not rpms else None)
+            if why:
+                self.finish_calibration("stopped", why)
+                return None
+            if now - c["since"] >= self.CALIB_SETTLE:
+                c["samples"].append({"rpm": rpms, "watts": sensors["watts"]})
+                if len(c["samples"]) >= self.CALIB_SAMPLES:
+                    seen = [s["rpm"] for s in c["samples"]]
+                    fans = {n: round(sum(s[n][0] for s in seen if n in s) / sum(n in s for s in seen))
+                            for n in sorted({n for s in seen for n in s})}
+                    ok = all(s[n][1] for s in seen for n in s) and min(fans.values()) >= self.CALIB_STOPPED
+                    watts = [s["watts"] for s in c["samples"] if s["watts"] is not None]
+                    c["results"].append({"pct": c["steps"][c["i"]], "rpm": round(sum(fans.values()) / len(fans)),
+                                         "fans": fans, "ok": ok,
+                                         "watts": round(sum(watts) / len(watts)) if watts else None})
+                    c["i"], c["since"], c["samples"] = c["i"] + 1, now, []
+                    if c["i"] == len(c["steps"]):
+                        self.finish_calibration("done")
+                        return None
+            pct = c["steps"][c["i"]]
+            return pct, f"fan calibration, step {c['i'] + 1} of {len(c['steps'])}: {pct}%"
+
+    def finish_calibration(self, status, reason=""):
+        """End the calibration ("done" or "stopped"), work out what it found and keep it on disk.
+        Called with self.lock held."""
+        c = self.calib
+        at = c["steps"][min(c["i"], len(c["steps"]) - 1)]
+        c.update(status=status, reason=reason, ended=time.time(), samples=[], at=at)
+        res = c["results"]
+        spinning = None
+        for r in res:  # fastest first: the lowest speed down to which every step kept every fan turning
+            if not r["ok"]:
+                break
+            spinning = r["pct"]
+        if status == "done":
+            slowest = res[-1]["rpm"]
+            c["floor"] = max(r["pct"] for r in res if r["rpm"] <= slowest * 1.05)  # below it, no slower
+            c["suggested"] = None if spinning is None else max(c["floor"], spinning)
+            # what the fans themselves draw at full speed over the slowest: the server's power, steady load
+            if res[0]["watts"] is not None and res[-1]["watts"] is not None:
+                c["fan_watts"] = res[0]["watts"] - res[-1]["watts"]
+            self.log(f"Fan calibration finished: {res[0]['rpm']} RPM at {res[0]['pct']}%, {slowest} RPM at "
+                     f"{res[-1]['pct']}%" + ("; no speed kept every fan turning" if spinning is None else
+                                             f"; suggested minimum speed {c['suggested']}%"),
+                     "warn" if spinning is None else "info")
+        elif reason.startswith("the failsafe took over") and spinning is not None:
+            # a fan stopped at this step, or the BMC took over: the steps above it still tell
+            c["suggested"] = spinning
+            self.log(f"Fan calibration stopped at {at}%: {reason}; every fan kept turning down to {spinning}%", "warn")
+        else:
+            self.log(f"Fan calibration stopped at {at}%: {reason}", "warn")
+        self.wake.set()
+        try:
+            write_json(self.calib_file, c)
+        except OSError as e:
+            log.error("could not save the fan calibration: %s", e, extra={"server": self.id})
+
     def log(self, msg, level="info"):
         with self.lock:  # HTTP threads log too, while reports iterate over the events
             self.events.appendleft({"t": time.time(), "level": level, "msg": msg})
@@ -216,16 +375,23 @@ class Server:
         effective, target, reason, failsafe = self.protect(settings, cpu, sensors, power, was_failsafe, now)
 
         smart = None
-        if effective == "manual" and settings["mode"] == "smart":
-            with self.lock:  # forget_learned() clears the map from the HTTP thread
-                target, smart = smart_step(self.smart, self.learned, settings, cpu, sensors, now, cap)
-            smart["reason"] = smart["reason"].replace(", quiet hours cap", f", {cap_name} cap")
-            reason = smart["reason"]
-            if target is None:
-                effective, reason, smart = "auto", "smart mode has no temperature to aim at", None
+        calib = self.calibration_step(failsafe, reason, cpu, sensors, power, dry, now)
+        if calib:  # the step's speed as it is, past quiet hours and ramps: someone started this by hand
+            (speed, reason), effective = calib, "manual"
+            target = speed
+            self.smart = {}
         else:
-            self.smart = {}  # start afresh next time smart mode takes over; what it learned stays
-        speed, reason = self.choose_speed(settings, effective, target, reason, smart, cap, cap_name, was_failsafe, failsafe, now)
+            if effective == "manual" and settings["mode"] == "smart":
+                with self.lock:  # forget_learned() clears the map from the HTTP thread
+                    target, smart = smart_step(self.smart, self.learned, settings, cpu, sensors, now, cap)
+                smart["reason"] = smart["reason"].replace(", quiet hours cap", f", {cap_name} cap")
+                reason = smart["reason"]
+                if target is None:
+                    effective, reason, smart = "auto", "smart mode has no temperature to aim at", None
+            else:
+                self.smart = {}  # start afresh next time smart mode takes over; what it learned stays
+            speed, reason = self.choose_speed(settings, effective, target, reason, smart, cap, cap_name, was_failsafe,
+                                              failsafe, now)
         effective, speed, reason, error = self.command(settings, effective, speed, reason, dry)
         if effective is None:  # stopped while reading: release() owns the fans now
             return
@@ -302,6 +468,11 @@ class Server:
         if was_failsafe and not failsafe and self.failsafe_since and now - self.failsafe_since < self.FAILSAFE_HOLD:
             left = self.FAILSAFE_HOLD - (now - self.failsafe_since)
             return "auto", None, f"failsafe held for {left / 60:.0f} more min", True
+        if self.handed_until:
+            if now < self.handed_until:
+                return "auto", None, f"handed to the BMC until {time.strftime('%H:%M', time.localtime(self.handed_until))}", failsafe
+            self.handed_until = None
+            self.log("The hand-over to the BMC ended; control resumes")
         return effective, target, reason, failsafe
 
     def choose_speed(self, settings, effective, target, reason, smart, cap, cap_name, was_failsafe, failsafe, now):
@@ -381,8 +552,9 @@ class Server:
         with self.lock:
             prev = self.state
             # every change of who is in control, but speed changes only from 5 % on: a slow
-            # ramp moves 1 % at a time and would push everything else out of the event log
-            if effective != "monitor" and (effective != prev["effective"] or (
+            # ramp moves 1 % at a time and would push everything else out of the event log. A
+            # calibration's steps are its own start and end lines.
+            if effective != "monitor" and not self.calibrating() and (effective != prev["effective"] or (
                     speed is not None and (self.logged is None or abs(speed - self.logged) >= 5))):
                 self.log(("Dry run: would set fans to " if dry else "Fans → ")
                          + f"{'automatic' if effective == 'auto' else f'{speed}%'} ({reason})",
@@ -526,7 +698,7 @@ class Server:
                 self.release()
             if time.time() - self.saved > SAVE_EVERY:
                 self.save_history()
-            self.wake.wait(INTERVAL)
+            self.wake.wait(self.CALIB_EVERY if self.calibrating() else INTERVAL)
             self.wake.clear()
 
     def info(self):
@@ -663,7 +835,7 @@ def stop(srv, forget=False):
     srv.save_history()
     SERVERS.pop(srv.id, None)
     if forget:
-        for f in (srv.settings_file, srv.history_file, srv.smart_file):
+        for f in (srv.settings_file, srv.history_file, srv.smart_file, srv.calib_file, srv.handed_file):
             try:
                 f.unlink()
             except OSError:

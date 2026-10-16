@@ -1,7 +1,9 @@
 """Sign-in sessions and the HTTP server."""
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import re
@@ -13,7 +15,7 @@ from . import config, tokens, updates
 from .alerts import (ALERT_KINDS, CHANNELS, SAMPLE, alert_config, build_payload, build_report, post_webhook,
                      public_alert_config, save_alerts, send_channel, validate_alerts, webhook_of)
 from .backup import export_config, import_config
-from .config import DATA_DIR, INTERVAL, VERSION, WEB
+from .config import DATA_DIR, HISTORY_SECONDS, INTERVAL, VERSION, WEB
 from .control import validate_settings
 from .drivers import DRIVERS, DriverError, detect, forget_pin, scan
 from .metrics import metrics
@@ -217,7 +219,9 @@ def get_state(h):
     settings = srv.settings()
     with srv.lock:  # copy under the lock, send after: a slow client must never hold up the fans
         body = {**srv.state, **srv.info(), "interval": INTERVAL, "auth": bool(config.WEB_PASSWORD),
-                "version": VERSION, "settings": settings, "history": list(srv.history), "events": list(srv.events)}
+                "version": VERSION, "settings": settings, "history": list(srv.history), "events": list(srv.events),
+                "calibration": json.loads(json.dumps(srv.calib)),  # a copy: the loop changes it in place
+                "handed_until": srv.handed_until}
     return h.send(200, body)
 
 
@@ -234,6 +238,29 @@ def get_history(h):
     with srv.lock:  # copy under the lock, send after
         points = [p for p in srv.long if p["t"] >= since]
     return h.send(200, {"points": points, "bucket": 300})
+
+
+@route("GET", r"/api/history\.csv", "viewer")
+def get_history_csv(h):
+    """The history as a spreadsheet: every reading for the last 3 hours, 5-minute averages beyond."""
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    try:
+        seconds = min(7 * 86400, max(600, int(h.query.get("seconds", ["86400"])[0])))
+    except ValueError:
+        return h.send(400, {"error": "seconds must be a number"})
+    since = time.time() - seconds
+    with srv.lock:
+        points = [p for p in (srv.history if seconds <= HISTORY_SECONDS else srv.long) if p["t"] >= since]
+    cols = ("cpu", "cpu_max", "speed", "inlet", "exhaust", "rpm", "fanpct", "watts")
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
+    w.writerow(["time", "cpu_c", "cpu_max_c", "fan_speed_pct", "inlet_c", "exhaust_c", "fan_rpm", "fan_pct", "watts"])
+    for p in points:
+        w.writerow([time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["t"]))] + ["" if p.get(c) is None else p[c] for c in cols])
+    return h.send(200, out.getvalue().encode(), "text/csv; charset=utf-8",
+                  headers=[("Content-Disposition", f'attachment; filename="{srv.id}-history.csv"')])
 
 
 @route("GET", r"/api/alerts", "viewer")
@@ -497,6 +524,34 @@ def post_widget_config(h):
         return h.send(400, {"error": str(e)})
     log.info("widget fields set to %s by %s", widget_fields(), h.who())
     return h.send(200, {"fields": widget_fields()})
+
+
+@route("POST", r"/api/calibrate", "admin")
+def post_calibrate(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if h.body.get("action") == "stop":
+        with srv.lock:
+            if srv.calibrating():
+                srv.finish_calibration("stopped", f"stopped by {h.who()}")
+        return h.send(200, {"ok": True})
+    why = srv.start_calibration(h.who())
+    return h.send(409, {"error": why}) if why else h.send(200, {"ok": True})
+
+
+@route("POST", r"/api/handover", "admin")
+def post_handover(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    minutes = h.body.get("minutes")
+    if not (type(minutes) is int and 0 <= minutes <= 7 * 24 * 60):
+        return h.send(400, {"error": "minutes must be a whole number from 0 to 10080 (7 days)"})
+    if not srv.control:
+        return h.send(409, {"error": "this server is monitored only"})
+    srv.hand_over(minutes, h.who())
+    return h.send(200, {"handed_until": srv.handed_until})
 
 
 @route("POST", r"/api/smart/forget", "admin")

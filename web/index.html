@@ -100,6 +100,7 @@
         <div class="aside tabs" role="group" aria-label="Time range">
           <button data-range="900">15 min</button><button data-range="3600" aria-pressed="true">1 h</button><button data-range="10800">3 h</button><button data-range="86400">24 h</button><button data-range="604800">7 d</button>
         </div>
+        <a class="inline-btn csv" id="csv" download title="Download this range as a spreadsheet">CSV</a>
       </div>
       <div class="chart-wrap">
         <svg id="chart" aria-label="Temperature and fan history chart"></svg>
@@ -223,6 +224,13 @@
         <button class="btn" id="discard" disabled>Discard</button>
         <button class="btn primary" id="save" disabled>Apply</button>
       </div>
+      <div class="handover">
+        <span class="muted" id="ho-text">Hand the fans to the BMC for</span>
+        <span class="mini" role="group" aria-label="Hand the fans to the BMC" id="ho-btns">
+          <button data-ho="60">1 h</button><button data-ho="240">4 h</button><button data-ho="720">12 h</button>
+        </span>
+        <button class="inline-btn" id="ho-end" hidden>Take back now</button>
+      </div>
       </div>
     </section>
   </div>
@@ -232,6 +240,16 @@
     <section>
       <div class="hd"><h2>Fans</h2><span class="aside" id="fan-count"></span></div>
       <table><thead><tr><th>Sensor</th><th></th><th class="r" id="fan-unit">RPM</th></tr></thead><tbody id="fans"></tbody></table>
+      <div class="calib" id="calib" hidden>
+        <p class="help" id="calib-text">Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.</p>
+        <p class="help" id="calib-power" hidden></p>
+        <div class="curve-box" id="calib-chart" hidden><svg id="calib-svg" viewBox="0 0 400 140" aria-label="Fan RPM at each speed"></svg></div>
+        <div class="calib-actions">
+          <button class="inline-btn" id="calib-start">Calibrate fans</button>
+          <button class="inline-btn" id="calib-stop" hidden>Stop</button>
+          <button class="inline-btn" id="calib-use" hidden></button>
+        </div>
+      </div>
     </section>
     <section>
       <div class="hd"><h2>Temperatures</h2><span class="aside" id="temp-count"></span></div>

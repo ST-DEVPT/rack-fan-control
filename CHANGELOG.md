@@ -3,6 +3,17 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.7.0] - 2026-10-16
+
+- **Fan calibration**: one button under the fan list steps the fans from 100 % down to 0 %, measures each
+  fan's RPM and the power draw at every step, and draws the curve. It says below which speed the fans turn
+  no slower, the lowest speed at which every fan kept turning, and what the fans cost in watts at full
+  speed, and puts the suggested minimum speed into the settings with one click. Every protection stays on;
+  when a fan stops at a low step, the steps above it still count.
+- **Hand the fans to the BMC for a while**: 1, 4 or 12 hours (any time up to a week through the API), for
+  maintenance or a stress test; control comes back on its own, also across a restart.
+- **History as CSV**: a button next to the chart's time range downloads it.
+
 ## [2.6.2] - 2026-10-16
 
 - **Dell: the BMC's warning thresholds are read again on servers that have one unreadable sensor** (an empty
