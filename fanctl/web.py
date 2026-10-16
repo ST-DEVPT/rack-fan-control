@@ -534,6 +534,39 @@ def post_widget_config(h):
     return h.send(200, {"fields": widget_fields()})
 
 
+@route("GET", r"/api/settings/history", "viewer")
+def get_settings_history(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    return h.send(200, {"changes": srv.changes()[::-1]})
+
+
+@route("GET", r"/api/sel", "viewer")
+def get_sel(h):
+    """The BMC's event log, read when asked: it takes the BMC a few seconds."""
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    try:
+        return h.send(200, srv.driver.sel())
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+
+
+@route("POST", r"/api/sel/clear", "admin")
+def post_sel_clear(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    try:
+        srv.driver.clear_sel()
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+    srv.log(f"BMC event log cleared by {h.who()}")
+    return h.send(200, {"ok": True})
+
+
 @route("POST", r"/api/calibrate", "admin")
 def post_calibrate(h):
     srv = server_or_404(h)

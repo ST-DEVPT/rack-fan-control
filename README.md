@@ -193,6 +193,7 @@ The 1.x variables still work and keep their settings: `IDRAC_HOST`, `IDRAC_USERN
 | `smart-<server>.json` | What smart mode learned: the fan speed each heat load needs |
 | `calibration-<server>.json` | The last fan calibration: RPM and power draw at each speed |
 | `handover-<server>.json` | Until when the fans are handed to the BMC, while they are |
+| `changes-<server>.json` | The last 20 settings saved, with who saved them and when |
 | `widget.json` | Which fields widgets may show |
 | `tokens.json` | Widget and metrics tokens, as SHA-256 hashes (file mode 600) |
 | `report-state.json` | Which Discord message the status card is edited into |
@@ -231,7 +232,9 @@ is left out: no fan speed cools the room. It answers to whichever is worst, in f
   are ignored. At idle it rests on the minimum speed.
 
 When something heads for its trip point, smart mode **boosts** the fans by 25 % at once, so the BMC rarely
-has to take over. During quiet hours the cap gives way gradually from 8 °C below a trip point: louder fans
+has to take over. Under the learned map, the panel says how it has been doing over the last hours: how
+often the CPU was within 2 °C of the target, the average fan speed, and how often the fans changed
+direction; the history chart draws the target as a dotted line. During quiet hours the cap gives way gradually from 8 °C below a trip point: louder fans
 beat a failsafe.
 
 ### Protection
@@ -307,10 +310,22 @@ fans from 100 % down to 0 % (12 steps, about 6 minutes, loud at first), measures
 server's power draw at every step, and draws the curve. It then says below which speed the fans turn no
 slower (many fans have a floor of their own, so a lower setting only adds risk), the lowest speed at which
 every fan kept turning, and how many watts the fans cost at full speed; **Use N % as minimum speed** puts
-that into the settings. Every protection stays on while it runs. The failsafe, a fan that stops, a BMC that
+that into the settings. From the same measurements it estimates what the fans draw now (and in kWh a
+month), and over the last 7 days while Fan Control had them against while the BMC had them. Every protection stays on while it runs. The failsafe, a fan that stops, a BMC that
 ignores a command, the CPU warming by 10 °C, a dry run or a hand-over stop it, and the steps measured
 until then still count. It never takes a fan under its BMC minimum: it goes no slower once a fan is within
 15 % of it. Quiet hours do not cap it: it was started by hand. It needs fans that report RPM.
+
+### Earlier settings and the BMC's event log
+
+**Earlier settings**, under **Apply**, lists the last 20 settings saved for the server: when, by whom (an
+account and its address, or a control token's name) and what changed. **Load** puts one back in the panel,
+to check and apply like any change.
+
+**BMC event log**, under the events, reads the BMC's System Event Log when opened (IPMI servers: Dell,
+Supermicro and plain IPMI): how full it is and the last 25 entries, newest first. A full log stops
+recording, and fans run under their minimum show up there, so it is worth a look after lowering the
+minimum speed. An admin can clear it.
 
 ### Handing the fans to the BMC for a while
 
@@ -438,6 +453,8 @@ curl -X POST -H "Authorization: Bearer <control token>" -H "Content-Type: applic
 ```
 
 Settings take only the fields sent; `POST /api/handover` takes `{"minutes": 120}` (`0` takes the fans back).
+The page also has a **Proxmox** backup hook: saved as a `vzdump` hook script, it hands the fans to the BMC
+when a backup job starts and takes them back when it ends.
 
 ## Something wrong with your hardware?
 

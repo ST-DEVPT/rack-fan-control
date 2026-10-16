@@ -174,7 +174,7 @@ def aggregate(points):
     return {"t": points[-1]["t"], "cpu": avg("cpu"), "cpu_max": max(cpus) if cpus else None,
             "speed": round(sum(manual) / len(manual)) if len(manual) * 2 > len(points) else None,
             "inlet": avg("inlet"), "exhaust": avg("exhaust"), "rpm": avg("rpm"), "fanpct": avg("fanpct"),
-            "watts": avg("watts")}
+            "watts": avg("watts"), "target": avg("target")}
 
 
 def ramped(window, now, target, hold):

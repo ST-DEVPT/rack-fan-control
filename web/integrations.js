@@ -75,6 +75,19 @@ function renderAutomation() {
     '    unit_of_measurement: "°C"', "    scan_interval: 30", "",
     "# secrets.yaml", 'fan_control_bearer: "Bearer <token>"',
   ].join("\n");
+  $("#au-pve").textContent = [
+    "#!/bin/sh",
+    "# Proxmox vzdump hook: the BMC takes the fans while backups run",
+    `URL="${base}/api/handover?server=${s.id}"`,
+    'TOKEN="<control token>"',
+    'case "$1" in',
+    "  job-start) MINUTES=480 ;;          # taken back at the end; 8 h at most if the end never comes",
+    "  job-end|job-abort) MINUTES=0 ;;",
+    "  *) exit 0 ;;",
+    "esac",
+    'curl -fsS -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+    '  -d "{\\"minutes\\": $MINUTES}" "$URL" > /dev/null || true',
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------- Prometheus

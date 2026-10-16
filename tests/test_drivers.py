@@ -123,6 +123,16 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
         s = parse_sdr(SDR, t)
         self.assertEqual([x["warn"] for x in s["temps"]], [42.0, 75.0, 85.0, 86.0])  # same-name CPUs keep their order
 
+    def test_event_log(self):
+        info = ("SEL Information\nVersion          : 1.5 (v1.5, v2 compliant)\nEntries          : 482\n"
+                "Free Space       : 8704 bytes\nPercent Used     : 47%\n")
+        elist = ("   1 | 08/02/2026 | 11:02:31 | Event Logging Disabled SEL | Log area reset/cleared | Asserted\n"
+                 " 1e2 | 10/15/2026 | 23:41:07 | Fan Fan1 RPM | Lower Critical going low  | Asserted\n")
+        sel = drivers.parse_sel(info, elist)
+        self.assertEqual((sel["used_pct"], sel["entries"]), (47, 482))
+        self.assertEqual(sel["recent"][0], ["1e2", "10/15/2026", "23:41:07", "Fan Fan1 RPM", "Lower Critical going low", "Asserted"])
+        self.assertIsNone(drivers.parse_sel("Percent Used     : unknown\n", "")["used_pct"])  # some BMCs do not say
+
     def test_fan_floors(self):
         floors = drivers.parse_fan_floors(self.SENSOR + "\nFan2 RPM | 3600.000 | RPM | ok | na | 360.000 | na | na | na | na")
         self.assertEqual(floors, {"Fan1 RPM": [600.0], "Fan2 RPM": [360.0]})  # non-critical, else critical

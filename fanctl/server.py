@@ -34,6 +34,7 @@ class Server:
         self.smart_file = DATA_DIR / f"smart-{self.id}.json"  # what smart mode learned about this server
         self.calib_file = DATA_DIR / f"calibration-{self.id}.json"  # the last fan calibration's results
         self.handed_file = DATA_DIR / f"handover-{self.id}.json"  # fans left to the BMC for a while
+        self.changes_file = DATA_DIR / f"changes-{self.id}.json"  # the last settings saved, to look back on
         self.lock = threading.RLock()  # re-entrant: log() takes it, and is called with it held
         self.wake = threading.Event()
         self.stop = threading.Event()
@@ -111,13 +112,26 @@ class Server:
             s = {**DEFAULT_SETTINGS, "mode": "auto"}
         return s
 
+    CHANGES_KEPT = 20  # settings versions kept per server
+
     def save_settings(self, s, who=""):
         write_json(self.settings_file, s)
+        rows = self.changes()
+        rows.append({"t": round(time.time()), "who": who, "settings": s})
+        try:
+            write_json(self.changes_file, rows[-self.CHANGES_KEPT:])
+        except OSError as e:  # the settings themselves are saved; only the record of them is not
+            log.error("could not keep the settings history: %s", e, extra={"server": self.id})
         with self.lock:
             self.window.clear()  # a new setting applies now, not after the ramp-down delay
         self.log(f"Settings saved{' by ' + who if who else ''}: mode {s['mode']}")
         notify(self, "settings_changed", mode=s["mode"], failsafe=s["failsafe_temp"])
         self.wake.set()
+
+    def changes(self):
+        """The settings saved before, oldest first: {t, who, settings}."""
+        rows = read_json(self.changes_file, [], f"settings history of {self.name}")
+        return [r for r in rows if isinstance(r, dict) and isinstance(r.get("settings"), dict)] if isinstance(rows, list) else []
 
     def load_history(self):
         try:
@@ -604,7 +618,8 @@ class Server:
             self.record({"t": round(now), "cpu": cpu, "speed": speed,
                          "inlet": sensors["inlet"], "exhaust": sensors["exhaust"],
                          "rpm": fan_avg(sensors["fans"], "rpm"), "fanpct": fan_avg(sensors["fans"], "pct"),
-                         "watts": sensors["watts"]})
+                         "watts": sensors["watts"],
+                         "target": settings["smart_target"] if smart else None})
 
     def check_limits(self, sensors, cpu, failsafe, vals, now):
         """The temperature alerts: running hot, room running hot, failsafe lasting. Called with self.lock held."""
@@ -868,7 +883,7 @@ def stop(srv, forget=False):
     srv.save_history()
     SERVERS.pop(srv.id, None)
     if forget:
-        for f in (srv.settings_file, srv.history_file, srv.smart_file, srv.calib_file, srv.handed_file):
+        for f in (srv.settings_file, srv.history_file, srv.smart_file, srv.calib_file, srv.handed_file, srv.changes_file):
             try:
                 f.unlink()
             except OSError:

@@ -97,6 +97,7 @@
           <span><i class="dash" style="--c:var(--ink-3)"></i>Exhaust <span class="tu">°C</span></span>
           <span><i style="--c:var(--accent)"></i>Fans %</span>
           <span id="legend-auto"><i class="box"></i>Automatic</span>
+          <span id="legend-target" hidden><i class="dash" style="--c:var(--cool)"></i>Smart target</span>
         </div>
         <div class="aside tabs" role="group" aria-label="Time range">
           <button data-range="900">15 min</button><button data-range="3600" aria-pressed="true">1 h</button><button data-range="10800">3 h</button><button data-range="86400">24 h</button><button data-range="604800">7 d</button>
@@ -140,6 +141,7 @@
         </div>
         <p class="help smart-live" id="smart-live"></p>
         <p class="help smart-live" id="smart-detail"></p>
+        <p class="help smart-live" id="smart-report"></p>
         <div class="smart-map" id="smart-map" hidden>
           <div class="smart-map-hd"><span>Learned: the speed each power draw needs</span>
             <button type="button" class="inline-btn" id="smart-forget">Forget</button></div>
@@ -228,6 +230,10 @@
         <button class="btn" id="discard" disabled>Discard</button>
         <button class="btn primary" id="save" disabled>Apply</button>
       </div>
+      <details class="changes" id="changes">
+        <summary>Earlier settings</summary>
+        <div id="changes-list"></div>
+      </details>
       <div class="handover">
         <span class="muted" id="ho-text">Hand the fans to the BMC for</span>
         <span class="mini" role="group" aria-label="Hand the fans to the BMC" id="ho-btns">
@@ -248,6 +254,7 @@
         <p class="help" id="calib-text">Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.</p>
         <p class="help" id="calib-note" hidden></p>
         <p class="help" id="calib-power" hidden></p>
+        <p class="help" id="calib-use-power" hidden></p>
         <div class="curve-box" id="calib-chart" hidden><svg id="calib-svg" viewBox="0 0 400 140" aria-label="Fan RPM at each speed"></svg></div>
         <div class="calib-actions">
           <button class="inline-btn" id="calib-start">Calibrate fans</button>
@@ -263,6 +270,10 @@
     <section>
       <div class="hd"><h2>Events</h2><span class="aside" id="updated"></span></div>
       <div class="log-scroll"><table class="log"><tbody id="log"></tbody></table></div>
+      <details class="sel" id="sel">
+        <summary>BMC event log</summary>
+        <div id="sel-body"></div>
+      </details>
     </section>
   </div>
 
@@ -496,6 +507,13 @@
         <h2><span class="n">3</span> Home Assistant</h2>
         <p data-i18n="au-ha">Two buttons and a sensor, for <code>configuration.yaml</code>; the token goes in <code>secrets.yaml</code>.</p>
         <div class="code"><pre tabindex="0" id="au-ha"></pre><button class="copy" data-copy="au-ha">Copy</button></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">4</span> Proxmox backups</h2>
+        <p data-i18n="au-pve">The BMC takes the fans while backups run and gives them back when they end. Save this as
+          <code>/usr/local/bin/fan-control-backup</code>, make it executable, and add
+          <code>script: /usr/local/bin/fan-control-backup</code> to <code>/etc/vzdump.conf</code>.</p>
+        <div class="code"><pre tabindex="0" id="au-pve"></pre><button class="copy" data-copy="au-pve">Copy</button></div>
       </section>
     </div>
     <aside class="int-side">

@@ -102,6 +102,19 @@ def parse_fan_floors(text):
     return out
 
 
+SEL_RECENT = 25  # event log entries shown
+
+
+def parse_sel(info, elist):
+    """`ipmitool sel info` and `sel elist last N`. An entry: '  1f | 10/16/2026 | 01:23:45 | Fan #0x30 |
+    Lower Critical going low | Asserted'. A full log stops recording, so how full it is matters."""
+    def number(label):
+        m = re.search(label + r"\s*:\s*(\d+)", info)
+        return int(m.group(1)) if m else None
+    rows = [[p.strip() for p in line.split("|")] for line in elist.splitlines() if line.count("|") >= 4]
+    return {"used_pct": number("Percent Used"), "entries": number("Entries"), "recent": rows[::-1]}
+
+
 def parse_sdr(text, thresholds=None, fan_floors=None):
     """Parse `ipmitool sdr elist full`. Line shape: 'Inlet Temp | 04h | ok | 7.1 | 23 degrees C'.
     Entity 3.x is a processor. Names differ between generations ("Inlet Temp" vs "Ambient Temp",
@@ -199,6 +212,14 @@ class Driver:
     def set_pcie(self, enabled):
         raise DriverError("not supported")
 
+    def sel(self):
+        """The BMC's System Event Log: {used_pct, entries, recent: [[id, date, time, sensor, event, direction], ...]},
+        newest first."""
+        raise DriverError("this server's event log is not read here; use the BMC's own web page")
+
+    def clear_sel(self):
+        raise DriverError("this server's event log is not cleared here; use the BMC's own web page")
+
     def diagnose(self):
         """What the BMC answers, as raw as possible, for a bug report about hardware this was never
         tested on. Serial numbers, addresses and the like are taken out (see redact)."""
@@ -238,6 +259,12 @@ class IPMIDriver(Driver):
             hint = next((h for code, h in HINTS.items() if code in msg), None)
             raise DriverError(f"{msg} ({hint})" if hint else msg)
         return r.stdout
+
+    def sel(self):
+        return parse_sel(self.ipmi("sel", "info"), self.ipmi("sel", "elist", "last", str(SEL_RECENT), timeout=40))
+
+    def clear_sel(self):
+        self.ipmi("sel", "clear")
 
     thresholds = None  # read once: `ipmitool sensor` is slow and thresholds don't change
     thresholds_at = 0  # when they were last tried, to retry a failed read every 10 min
@@ -671,6 +698,15 @@ class DemoDriver(Driver):
         self.speed = pct
 
     def set_pcie(self, enabled):
+        pass
+
+    def sel(self):
+        return parse_sel("Entries          : 3\nPercent Used     : 1%\n",
+                         "   1 | 10/14/2026 | 08:12:40 | Power Supply #0x62 | Presence detected | Asserted\n"
+                         "   2 | 10/15/2026 | 23:41:07 | Fan #0x30 | Lower Critical going low  | Asserted\n"
+                         "   3 | 10/15/2026 | 23:41:12 | Fan #0x30 | Lower Critical going low  | Deasserted")
+
+    def clear_sel(self):
         pass
 
 

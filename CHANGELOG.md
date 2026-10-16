@@ -3,6 +3,18 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.0] - 2026-10-16
+
+- **Earlier settings**: the last 20 settings saved for each server, with when, who and what changed; any can
+  be loaded back into the panel and applied.
+- **The BMC's event log** (IPMI servers): how full it is and the last 25 entries, read when opened; an admin
+  can clear it. A full log stops recording, and fans under their minimum land there.
+- **How smart mode is doing**: over the last hours, how often the CPU was within 2 °C of the target, the
+  average fan speed and how often the fans changed direction; the target is drawn on the history chart.
+- **What the fans draw**, from the calibration: now, in kWh a month, and over 7 days with Fan Control against
+  with the BMC.
+- **Proxmox backup hook** on the Automation page: the BMC has the fans while `vzdump` jobs run.
+
 ## [2.8.1] - 2026-10-16
 
 Safety, from a critical review of 2.6-2.8.

@@ -62,7 +62,7 @@ function go() {
     if (!confirm(translate("Discard unsaved changes?"))) { history.back(); return; }
     discard[route.view]();
   }
-  if (next.view === "server" && next.id !== route.id) { server = null; draft = null; }
+  if (next.view === "server" && next.id !== route.id) { server = null; draft = null; $("#changes").open = $("#sel").open = false; }
   route = next;
   $$(".view").forEach(v => v.hidden = v.id !== "v-" + route.view);
   $$(".side-nav a").forEach(a => a.setAttribute("aria-current", a.dataset.route === route.view));
@@ -310,6 +310,7 @@ function renderServer() {
     renderControls();
   }
   $("#legend-auto").hidden = monitor;
+  $("#legend-target").hidden = !s.history.some(p => p.target != null);
   renderChart();
 }
 
@@ -416,7 +417,25 @@ $("#sched").addEventListener("input", e => {
 function touch() { dirty = true; renderControls(); }
 
 // smart mode: what it is doing now, and the map it has learned of this server
+// How smart mode is doing, from the readings of the last hours: is it holding the target, and calmly?
+function smartReport() {
+  const pts = (server?.history || []).filter(p => p.target != null && p.cpu != null);
+  const hours = pts.length ? (pts.at(-1).t - pts[0].t) / 3600 : 0;
+  if (pts.length < 20 || hours < 0.25) return "";
+  const within = pts.filter(p => Math.abs(p.cpu - p.target) <= 2).length / pts.length;
+  const speeds = pts.map(p => p.speed).filter(v => v != null);
+  let turns = 0, dir = 0;
+  for (let i = 1; i < speeds.length; i++) {
+    const d = Math.sign(speeds[i] - speeds[i - 1]);
+    if (d && d !== dir) { if (dir) turns++; dir = d; }
+  }
+  const avg = speeds.length ? speeds.reduce((a, b) => a + b) / speeds.length : 0;
+  return `Last ${fmt(hours, 1)} h in smart mode: CPU within ${fmt(td(2))} ${tu()} of the target ${Math.round(within * 100)} % ` +
+    `of the time, fans at ${Math.round(avg)} % on average, ${fmt(turns / hours, 1)} changes of direction an hour.`;
+}
+
 function renderSmart() {
+  $("#smart-report").textContent = smartReport();
   const sm = server?.smart, active = sm && server.effective === "manual";
   $("#smart-live").textContent = active ? `Now ${server.applied_speed} % · ${server.reason.replace(/^smart: /, "")}` : "";
   const trend = sm ? `Trend ${sm.trend >= 0 ? "+" : ""}${fmt(td(sm.trend), 1)} ${tu()}/min · ` : "";
@@ -469,6 +488,90 @@ function minSpeedWarning() {
   return "";
 }
 
+// Earlier settings: what changed each time, by whom, and a way back (into the draft, applied as usual)
+const CHANGE_LABELS = { mode: "mode", fixed_speed: "fixed speed", curve: "curve", curve_source: "curve sensor",
+  smart_target: "smart target", failsafe_temp: "CPU failsafe", min_speed: "minimum speed", exhaust_limit: "exhaust limit",
+  bmc_thresholds: "BMC thresholds", threshold_margin: "threshold margin", ramp_down_seconds: "ramp-down delay",
+  quiet: "quiet hours", schedule: "schedule", dry_run: "dry run", pcie_cooling: "PCIe cooling" };
+let changes = [];
+async function loadChanges() {
+  const box = $("#changes-list");
+  const r = await api("/api/settings/history?server=" + encodeURIComponent(server.id)).catch(() => null);
+  if (!r?.ok) { box.innerHTML = `<p class="hint">${esc(r ? await failure(r) : translate("Fan Control did not answer"))}</p>`; return; }
+  changes = (await r.json()).changes;
+  box.innerHTML = !changes.length ? `<p class="hint">${translate("Nothing saved yet.")}</p>` : `<table><tbody>${changes.map((c, i) => {
+    const before = changes[i + 1]?.settings;
+    const what = before ? Object.keys(CHANGE_LABELS).filter(k => JSON.stringify(c.settings[k]) !== JSON.stringify(before[k]))
+      .map(k => translate(CHANGE_LABELS[k])) : [translate("the oldest kept")];
+    return `<tr><td class="mono">${new Date(c.t * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</td>
+      <td>${esc(what.join(", ") || translate("nothing changed"))}<br><small class="muted">${esc(c.who || "")}</small></td>
+      <td class="r"><button class="inline-btn" data-load="${i}">${translate("Load")}</button></td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+$("#changes").addEventListener("toggle", e => { if (e.target.open) loadChanges(); });
+$("#changes-list").addEventListener("click", e => {
+  const b = e.target.closest("[data-load]");
+  if (!b) return;
+  draft = { ...structuredClone(draft), ...structuredClone(changes[+b.dataset.load].settings) };
+  touch();
+  toast("Earlier settings loaded. Apply to use them");
+});
+
+// The BMC's System Event Log, read when opened: a full one stops recording, and low fan speeds land in it
+async function loadSel() {
+  const box = $("#sel-body");
+  box.innerHTML = `<p class="hint">${translate("Reading the BMC…")}</p>`;
+  const r = await api("/api/sel?server=" + encodeURIComponent(server.id)).catch(() => null);
+  if (!r?.ok) { box.innerHTML = `<p class="hint">${esc(r ? await failure(r) : translate("Fan Control did not answer"))}</p>`; return; }
+  const d = await r.json(), full = d.used_pct >= 75;
+  box.innerHTML = `<p class="hint${full ? " full" : ""}">${d.used_pct == null ? `${d.entries ?? 0} entries` : `${d.entries} entries, ${d.used_pct} % full`}</p>` +
+    (full ? `<p class="hint full">${translate("A full log stops recording: clear it once you have read it.")}</p>` : "") +
+    (d.recent.length ? `<table><tbody>${d.recent.map(e => `<tr><td class="mono">${esc(e[1] || "")} ${esc(e[2] || "")}</td>
+      <td>${esc(e[3] || "")} · ${esc(e[4] || "")}${e[5] ? ` <span class="muted">${esc(e[5])}</span>` : ""}</td></tr>`).join("")}</tbody></table>` : "") +
+    `<div class="sel-actions"><button class="inline-btn" id="sel-again">${translate("Read again")}</button>
+     <button class="inline-btn" id="sel-clear">${translate("Clear the log")}</button></div>`;
+  $("#sel-again").onclick = loadSel;
+  $("#sel-clear").onclick = async () => {
+    if (!confirm(translate("Clear the BMC's event log? Its entries are gone for good; read them first."))) return;
+    const r = await api("/api/sel/clear?server=" + encodeURIComponent(server.id), {});
+    if (!r.ok) return toast(await failure(r), true);
+    toast("Event log cleared");
+    loadSel();
+  };
+}
+$("#sel").addEventListener("toggle", e => { if (e.target.open) loadSel(); });
+
+// What the fans themselves draw, from the calibration: the server's power at a fan RPM over its power at the slowest
+function fanWatts(c) {
+  const pts = (c?.results || []).filter(r => r.watts != null).map(r => [r.rpm, r.watts]).sort((a, b) => a[0] - b[0]);
+  if (pts.length < 2 || pts.at(-1)[1] - pts[0][1] < 5) return null;
+  return rpm => {
+    if (rpm <= pts[0][0]) return 0;
+    for (let i = 1; i < pts.length; i++) if (rpm <= pts[i][0]) {
+      const [r0, w0] = pts[i - 1], [r1, w1] = pts[i];
+      return Math.max(0, w0 - pts[0][1] + (w1 - w0) * (rpm - r0) / (r1 - r0));
+    }
+    return pts.at(-1)[1] - pts[0][1];
+  };
+}
+let week = { key: "", at: 0, pts: [] };  // 7 days of 5-minute averages, for the fan power comparison
+async function fanPower(c) {
+  const w = fanWatts(c), now = (server.history || []).filter(p => p.rpm != null);
+  if (!w || now.length < 20) return "";
+  const avg = now.reduce((a, p) => a + w(p.rpm), 0) / now.length;
+  let text = `Over the last ${fmt((now.at(-1).t - now[0].t) / 3600, 1)} h the fans drew about ${Math.round(avg)} W, ` +
+    `${fmt(avg * 24 * 30 / 1000, 1)} kWh a month at that rate.`;
+  if (week.key !== server.id || Date.now() - week.at > 600000) {
+    const r = await api(`/api/history?server=${encodeURIComponent(server.id)}&seconds=604800`).catch(() => null);
+    week = { key: server.id, at: Date.now(), pts: r?.ok ? (await r.json()).points : [] };
+  }
+  const mean = pts => pts.reduce((a, p) => a + w(p.rpm), 0) / pts.length;
+  const ours = week.pts.filter(p => p.rpm != null && p.speed != null), bmc = week.pts.filter(p => p.rpm != null && p.speed == null);
+  if (ours.length >= 12 && bmc.length >= 12)
+    text += ` ${translate(`In the last 7 days: about ${Math.round(mean(ours))} W while Fan Control had the fans, ${Math.round(mean(bmc))} W while the BMC had them.`)}`;
+  return text;
+}
+
 // fan calibration: start it, follow it, and use what it found
 const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
 function renderCalib() {
@@ -490,6 +593,8 @@ function renderCalib() {
   const power = !running && c?.fan_watts >= 5;  // under that, the readings' own noise
   $("#calib-power").hidden = !power;
   if (power) $("#calib-power").textContent = `At 100 % the fans draw about ${c.fan_watts} W more than at ${res.at(-1).pct} %.`;
+  if (power) fanPower(c).then(t => { $("#calib-use-power").hidden = !t; $("#calib-use-power").textContent = t; }).catch(() => {});
+  else $("#calib-use-power").hidden = true;
   $("#calib-chart").hidden = res.length < 2;
   if (res.length < 2) return;
   // RPM by speed, measured; a hollow dot where a fan stood still
@@ -577,6 +682,7 @@ $("#save").onclick = async () => {
     const body = await r.json();
     dirty = false; draft = body;
     toast("Settings applied");
+    if ($("#changes").open) loadChanges();
     renderControls();
     setTimeout(pollServer, 1200);
   } catch (e) {
@@ -861,6 +967,7 @@ function renderChart() {
     <path d="${path("exhaust", yT)}" fill="none" stroke="var(--ink-3)" stroke-width="1.25" stroke-dasharray="4 3"/>
     <path d="${path(fanKey, yS)}" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round"/>
     <path d="${path("cpu", yT)}" fill="none" stroke="var(--cool)" stroke-width="1.75" stroke-linejoin="round"/>
+    <path d="${path("target", yT)}" fill="none" stroke="var(--cool)" stroke-width="1" stroke-dasharray="2 4"/>
     <g id="cross" style="display:none"><line class="axis" y1="${pt}" y2="${H - pb}"/><circle r="3.5" fill="var(--cool)"/><circle r="3.5" fill="var(--accent)"/></g>`;
   if (!h.length) g += `<text x="${(W + pl - pr) / 2}" y="${H / 2}" text-anchor="middle">Collecting readings…</text>`;
   // what happened, as ticks along the top (changes, failsafes, errors; not every speed step); hovering lists them

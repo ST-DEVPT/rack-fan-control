@@ -364,6 +364,24 @@ class HTTP(Base):
             self.post("/api/tokens/revoke", {"id": row["id"]})
         self.assertEqual(self.req("GET", "/api/state?server=rack-b", headers=bearer)[0], 401)  # revoked
 
+    def test_settings_history(self):
+        for speed in (31, 32):
+            self.post("/api/settings?server=rack-b", {"mode": "fixed", "fixed_speed": speed})
+        st, _, data = self.get("/api/settings/history?server=rack-b")
+        changes = json.loads(data)["changes"]
+        self.assertEqual(st, 200)
+        self.assertEqual([c["settings"]["fixed_speed"] for c in changes[:2]], [32, 31])  # newest first
+        self.assertTrue(changes[0]["who"].startswith("admin at "))
+        self.assertLessEqual(len(changes), SERVERS["rack-b"].CHANGES_KEPT)
+
+    def test_bmc_event_log(self):
+        st, _, data = self.get("/api/sel?server=rack-a")
+        sel = json.loads(data)
+        self.assertEqual((st, sel["used_pct"], sel["entries"]), (200, 1, 3))
+        self.assertEqual(sel["recent"][0][:2], ["3", "10/15/2026"])  # newest first
+        self.assertEqual(self.post("/api/sel/clear?server=rack-a", {})[0], 200)
+        self.assertIn("BMC event log cleared by admin", SERVERS["rack-a"].events[0]["msg"])
+
     def test_handover(self):
         srv = SERVERS["rack-a"]
         try:
