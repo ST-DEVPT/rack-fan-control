@@ -207,7 +207,7 @@ For servers whose type has fan control (Dell, Supermicro, unlocked iLO 4):
 | --- | --- |
 | **Automatic** | The BMC runs its factory profile. Loudest, and the fallback for every problem |
 | **Fixed** | Every fan at one speed |
-| **Curve** | Speed follows the hottest CPU along points you drag. Start from a preset (quiet, balanced, cool, storage) or copy another server's curve |
+| **Curve** | Speed follows a temperature along points you drag: the hottest CPU, the exhaust air, or any sensor (a GPU, a disk bay). Start from a preset (quiet, balanced, cool, storage) or copy another server's curve. The CPU failsafe applies whichever it follows |
 | **Smart** | Holds the CPU at a target you set with as little fan as it can, learning what each load needs, and keeps every other sensor clear of its limits |
 
 ### Smart mode
@@ -418,6 +418,18 @@ Dashboards → New → Import, and pick your Prometheus data source.
 4. **App tile**: `/healthz` answers `200` while every BMC answers and `503` as soon as one stops.
 
 <img alt="Embed widget" src="docs/embed.jpg" width="420">
+
+**Automation** (Home Assistant, n8n, cron, a script): on the Automation page, create a control token. It
+reads what a read-only account sees, changes fan settings and hands the fans to the BMC; it never sees BMC
+accounts and cannot change servers, alerts, tokens or backups, and every change it makes is logged with its
+name. The page fills in `curl` examples and a Home Assistant `rest_command` and sensor for your servers.
+
+```bash
+curl -X POST -H "Authorization: Bearer <control token>" -H "Content-Type: application/json" \
+  -d '{"mode": "smart", "smart_target": 65}' "https://fans.example.lan/api/settings?server=r720"
+```
+
+Settings take only the fields sent; `POST /api/handover` takes `{"minutes": 120}` (`0` takes the fans back).
 
 ## Something wrong with your hardware?
 

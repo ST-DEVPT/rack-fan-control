@@ -82,6 +82,24 @@ class Protection(unittest.TestCase):
         self.assertEqual(decide(s, 50, True, {**self.SENSORS, "exhaust": 43})[3], True)   # still within 3 °C
         self.assertEqual(decide(s, 50, True, {**self.SENSORS, "exhaust": 42})[3], False)
 
+    def test_curve_follows_the_chosen_sensor(self):
+        sensors = {"temps": [{"name": "GPU", "value": 70, "cpu": False, "ok": True, "warn": None},
+                             {"name": "Temp", "value": 41, "cpu": True, "ok": True, "warn": None},
+                             {"name": "Temp", "value": 46, "cpu": True, "ok": True, "warn": None}],
+                   "exhaust": 38, "inlet": 22}
+        s = {**BASE, "mode": "curve", "min_speed": 10, "curve": [[30, 10], [70, 70]]}
+        self.assertEqual(decide(s, 46, sensors=sensors)[1:3], (34, "curve at 46°C"))   # the hottest CPU
+        self.assertEqual(decide({**s, "curve_source": "GPU"}, 46, sensors=sensors)[1:3], (70, "curve at GPU 70°C"))
+        self.assertEqual(decide({**s, "curve_source": "exhaust"}, 46, sensors=sensors)[2], "curve at exhaust air 38°C")
+        self.assertEqual(decide({**s, "curve_source": "Temp"}, 46, sensors=sensors)[1], 34)  # same name: the hottest
+        missing = decide({**s, "curve_source": "HBA"}, 46, sensors=sensors)
+        self.assertEqual(missing[0], "auto")                                            # no reading, the BMC decides
+        self.assertEqual(decide({**s, "curve_source": "GPU"}, 80, sensors=sensors)[0], "auto")  # CPU failsafe still
+        for bad in ("", 5, "x" * 61):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_settings({"curve_source": bad}, dict(DEFAULT_SETTINGS))
+        self.assertEqual(validate_settings({"curve_source": "GPU"}, dict(DEFAULT_SETTINGS))["curve_source"], "GPU")
+
     def test_minimum_speed(self):
         self.assertEqual(decide({**BASE, "mode": "fixed", "fixed_speed": 5, "min_speed": 12}, 40)[1], 12)
         self.assertEqual(decide({**BASE, "mode": "curve", "min_speed": 15}, 20)[1], 15)

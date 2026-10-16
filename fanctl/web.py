@@ -85,7 +85,8 @@ def diagnostics(srv):
 # route is ever open because of where it sits in a chain of ifs:
 #   public  anyone (sign-in page, health checks, static files)
 #   widget  a session, or a widget token as ?token= or a Bearer header
-#   viewer  any session, admin or read-only
+#   viewer  any session, admin or read-only, or a control token as a Bearer header
+#   control an admin session, or a control token: the changes automations may make
 #   admin   an admin session
 # /metrics checks its own token, since it has a rule of its own (open when nothing is protected).
 
@@ -275,7 +276,7 @@ def get_integrations(h):
                         "metrics_open": not config.WEB_PASSWORD and not tokens.any_token("metrics"),
                         "embed_token": tokens.any_token("widget"), "interval": INTERVAL,
                         "tokens": tokens.public(), "role": h.role(),
-                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN)},
+                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN), "control": False},
                         "widget_fields": widget_fields(), "widget_all": WIDGET_FIELDS,
                         "servers": [{"id": s.id, "name": s.name} for s in list(SERVERS.values())]})
 
@@ -323,7 +324,7 @@ def get_export(h):
 
 # ---- admin: changes
 
-@route("POST", r"/api/settings", "admin")
+@route("POST", r"/api/settings", "control")
 def post_settings(h):
     srv = server_or_404(h)
     if srv is None:
@@ -540,7 +541,7 @@ def post_calibrate(h):
     return h.send(409, {"error": why}) if why else h.send(200, {"ok": True})
 
 
-@route("POST", r"/api/handover", "admin")
+@route("POST", r"/api/handover", "control")
 def post_handover(h):
     srv = server_or_404(h)
     if srv is None:
@@ -598,8 +599,14 @@ class Handler(BaseHTTPRequestHandler):
         """The address to account sign-ins and changes to (see sessions.client_address)."""
         return client_address(self.client_address[0], self.headers.get("X-Forwarded-For", ""))
 
+    def control_token(self):
+        """The name of the control token sent as a Bearer header, or None."""
+        bearer = self.headers.get("Authorization", "")
+        return tokens.name_of(bearer.removeprefix("Bearer "), "control") if bearer.startswith("Bearer ") else None
+
     def who(self):
-        return f"{self.role()} at {self.client()}"
+        token = None if self.role() else self.control_token()
+        return f'token "{token}" at {self.client()}' if token else f"{self.role()} at {self.client()}"
 
     answered = False  # the status line went out: past it, an error can only close the connection
 
@@ -658,10 +665,11 @@ class Handler(BaseHTTPRequestHandler):
                 if self.route == "/embed":
                     return self.send(401, b"Sign in, or add ?token= with a widget token", "text/plain; charset=utf-8", frame=True)
                 return self.send(401, {"error": "sign in, or send a widget token as a Bearer token or ?token="})
-            if access in ("viewer", "admin") and not self.authed():
+            by_token = access in ("viewer", "control") and not self.role() and self.control_token()
+            if access in ("viewer", "control", "admin") and not self.authed() and not by_token:
                 return self.redirect("/login") if (method, self.route) == ("GET", "/") else \
                     self.send(401, {"error": "sign in required"})
-            if access == "admin" and self.role() != "admin":
+            if access in ("control", "admin") and self.role() != "admin" and not by_token:
                 return self.send(403, {"error": "this account can only look"})
             try:
                 return fn(self, *match.groups())

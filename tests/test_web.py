@@ -299,7 +299,7 @@ class HTTP(Base):
             path, body = concrete(pattern), ({} if method == "POST" else None)
             st = self.req(method, path, body)[0]
             self.assertIn(st, (303, 401), f"{method} {path} without a session")
-            if access == "admin":
+            if access in ("admin", "control"):
                 st = self.req(method, path, body, viewer)[0]
                 self.assertEqual(st, 403, f"{method} {path} as a viewer")
             checked += 1
@@ -328,6 +328,32 @@ class HTTP(Base):
         finally:
             srv.calib = None
             srv.calib_file.unlink(missing_ok=True)
+
+    def test_control_token(self):
+        """Automations: read state, change fan settings, hand over; nothing an admin account guards."""
+        st, _, data = self.post("/api/tokens", {"name": "HA", "kind": "control"})
+        row = json.loads(data)
+        bearer = {"Authorization": "Bearer " + row["token"]}
+        try:
+            self.assertEqual(self.req("GET", "/api/state?server=rack-b", headers=bearer)[0], 200)
+            st, _, _ = self.req("POST", "/api/settings?server=rack-b", {"mode": "fixed", "fixed_speed": 41}, bearer)
+            self.assertEqual((st, SERVERS["rack-b"].settings()["fixed_speed"]), (200, 41))
+            self.assertTrue(any('by token "HA" at ' in e["msg"] for e in SERVERS["rack-b"].events))
+            self.assertEqual(self.req("POST", "/api/handover?server=rack-b", {"minutes": 0}, bearer)[0], 200)
+            for method, path in (("GET", "/api/servers/rack-b"), ("GET", "/api/export"), ("POST", "/api/tokens"),
+                                 ("POST", "/api/alerts"), ("POST", "/api/calibrate?server=rack-b"),
+                                 ("POST", "/api/servers/rack-b/delete")):
+                with self.subTest(path=path):
+                    self.assertIn(self.req(method, path, {} if method == "POST" else None, bearer)[0], (401, 403))
+            self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": "Bearer fc_wrong"})[0], 401)
+            st, _, data = self.post("/api/tokens", {"name": "W", "kind": "widget"})
+            widget = json.loads(data)
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-b", {"mode": "auto"},
+                                      {"Authorization": "Bearer " + widget["token"]})[0], 401)  # read-only kind
+            self.post("/api/tokens/revoke", {"id": widget["id"]})
+        finally:
+            self.post("/api/tokens/revoke", {"id": row["id"]})
+        self.assertEqual(self.req("GET", "/api/state?server=rack-b", headers=bearer)[0], 401)  # revoked
 
     def test_handover(self):
         srv = SERVERS["rack-a"]

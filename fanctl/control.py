@@ -9,6 +9,8 @@ DEFAULT_SETTINGS = {
     "mode": "curve",  # auto | fixed | curve | smart
     "fixed_speed": 20,
     "curve": [[30, 10], [45, 15], [55, 25], [65, 45], [72, 70]],
+    "curve_source": None,      # what the curve follows: None = the hottest CPU, "exhaust", or a temperature
+                               # sensor's name (a GPU, a disk bay); the CPU failsafe applies whichever
     "failsafe_temp": 75,       # at or above this CPU temp, hand control back to the BMC
     "ramp_down_seconds": 60,   # fans speed up at once, slow down only after this long
     "pcie_cooling": None,      # None = leave untouched, True/False = enforce
@@ -38,6 +40,18 @@ def curve_speed(curve, temp):
         if temp <= t1:
             return round(s0 + (s1 - s0) * (temp - t0) / (t1 - t0)) if t1 > t0 else s1
     return pts[-1][1]
+
+
+def curve_input(source, cpu_temp, sensors=None):
+    """The temperature the curve follows (see DEFAULT_SETTINGS["curve_source"]), or None when that
+    sensor gives no reading. Several sensors with one name (Dell calls both CPUs "Temp"): the hottest."""
+    if source is None:
+        return cpu_temp
+    sensors = sensors or {}
+    if source == "exhaust":
+        return sensors.get("exhaust")
+    vals = [t["value"] for t in sensors.get("temps", []) if t["name"] == source]
+    return max(vals) if vals else None
 
 
 def hazard(settings, cpu_temp, sensors=None, tripped=False):
@@ -85,7 +99,12 @@ def decide(settings, cpu_temp, was_failsafe=False, sensors=None):
         return "manual", None, "smart", False  # the speed comes from smart_step(), which keeps state
     if settings["mode"] == "fixed":
         return "manual", max(settings["fixed_speed"], floor), "fixed speed", False
-    return "manual", max(curve_speed(settings["curve"], cpu_temp), floor), f"curve at {cpu_temp:.0f}°C", False
+    source = settings.get("curve_source")
+    temp = curve_input(source, cpu_temp, sensors)
+    if temp is None:  # a sensor that was never there; one that stops reporting trips the failsafe in faults()
+        return "auto", None, f"the curve's sensor {source} gives no reading", False
+    label = "" if source is None else "exhaust air " if source == "exhaust" else f"{source} "
+    return "manual", max(curve_speed(settings["curve"], temp), floor), f"curve at {label}{temp:.0f}°C", False
 
 
 def failed_fans(fans):
@@ -185,6 +204,8 @@ def validate_settings(new, current):
             and 0 <= p[0] <= 110 and 0 <= p[1] <= 100 for p in c)):
         raise ValueError("the curve needs 2 to 10 [temperature, speed] points, speed 0-100")
     s["curve"] = sorted([round(p[0]), round(p[1])] for p in c)
+    if s["curve_source"] is not None and not (isinstance(s["curve_source"], str) and 1 <= len(s["curve_source"]) <= 60):
+        raise ValueError("curve_source must be empty (the hottest CPU), \"exhaust\" or a sensor name")
     if s["pcie_cooling"] not in (None, True, False):
         raise ValueError("pcie_cooling must be null, true or false")
     if not (type(s["min_speed"]) is int and 0 <= s["min_speed"] <= 60):

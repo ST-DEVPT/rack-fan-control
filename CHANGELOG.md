@@ -3,6 +3,18 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.8.0] - 2026-10-16
+
+- **Automation page and control tokens**: Home Assistant, n8n, cron or a script can change fan settings and
+  hand the fans to the BMC with a Bearer token, and read what a read-only account sees. A control token never
+  sees BMC accounts or touches servers, alerts, tokens or backups; its changes are logged with its name. The
+  page fills in `curl` examples and a Home Assistant `rest_command` and sensor.
+- **The curve can follow any temperature**: the hottest CPU (as before), the exhaust air, or a sensor such
+  as a GPU or a disk bay. The CPU failsafe applies whichever it follows; a sensor that gives no reading hands
+  the fans to the BMC.
+- **The history chart marks what happened**: settings changes, hand-overs, calibrations, failsafes and errors
+  as ticks along the top, listed in the tooltip.
+
 ## [2.7.1] - 2026-10-16
 
 - **An alerts file with an empty section** (`"colors": null`, an event set to `null`), edited by hand, no

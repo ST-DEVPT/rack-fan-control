@@ -24,6 +24,7 @@
     <a href="#/prometheus" data-route="prometheus">Prometheus</a>
     <a href="#/grafana" data-route="grafana">Grafana</a>
     <a href="#/homarr" data-route="homarr">Homarr</a>
+    <a href="#/automation" data-route="automation">Automation</a>
     <a href="#/backup" data-route="backup">Backup</a>
   </nav>
   <div class="side-foot">
@@ -147,6 +148,8 @@
       </div>
       <div class="panel" data-panel="curve">
         <p class="help">Drag the points, or set them below. Points also take the arrow keys (Shift for steps of 5) and Delete.</p>
+        <div class="curve-src"><label for="curve-src">Follows</label><select id="curve-src"></select>
+          <small class="muted">The CPU failsafe applies whichever sensor the curve follows</small></div>
         <div class="presets curve-presets">
           <span class="muted">Start from</span>
           <button data-curve="quiet" title="Homelab, Xeon E5 class CPUs">Quiet</button>
@@ -460,6 +463,48 @@
       <h2>Preview</h2>
       <div class="board" id="hm-board"><iframe id="hm-frame" title="Widget preview" loading="lazy"></iframe></div>
       <p class="hint">Shown with your session; Homarr will use the token.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- ======================================================== Automation -->
+<section class="view" id="v-automation" hidden>
+  <header class="page-head">
+    <div>
+      <h1>Automation</h1>
+      <p class="lede">Change the fan mode or hand the fans to the BMC from Home Assistant, n8n, cron or a script.</p>
+    </div>
+    <span class="status-pill" id="au-status"></span>
+  </header>
+  <div class="int-grid">
+    <div class="int-main">
+      <section class="int-step">
+        <h2><span class="n">1</span> Create a control token</h2>
+        <p>It reads what a read-only account sees, changes fan settings and hands the fans to the BMC. It never
+          sees BMC accounts and cannot change servers, alerts, tokens or backups. Every change it makes is logged
+          with its name.</p>
+        <div class="tokens" data-kind="control"></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">2</span> Try it</h2>
+        <p>Send it as a Bearer header. Settings take only the fields you send; the rest stay as they are.</p>
+        <div class="code"><pre tabindex="0" id="au-curl"></pre><button class="copy" data-copy="au-curl">Copy</button></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">3</span> Home Assistant</h2>
+        <p data-i18n="au-ha">Two buttons and a sensor, for <code>configuration.yaml</code>; the token goes in <code>secrets.yaml</code>.</p>
+        <div class="code"><pre tabindex="0" id="au-ha"></pre><button class="copy" data-copy="au-ha">Copy</button></div>
+      </section>
+    </div>
+    <aside class="int-side">
+      <h2>What it can do</h2>
+      <table class="metric-table"><tbody>
+        <tr><td><code>GET /api/overview</code></td><td>Every server, briefly</td></tr>
+        <tr><td><code>GET /api/state</code></td><td>One server in full, with its history</td></tr>
+        <tr><td><code>POST /api/settings</code></td><td>Mode, speeds, targets, limits, quiet hours</td></tr>
+        <tr><td><code>POST /api/handover</code></td><td>The fans to the BMC for some minutes; 0 takes them back</td></tr>
+      </tbody></table>
+      <p data-i18n="au-server" class="hint">Add <code>?server=</code> with the server's id. The protections apply to every change, whoever makes it.</p>
     </aside>
   </div>
 </section>

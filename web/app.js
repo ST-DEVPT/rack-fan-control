@@ -47,7 +47,7 @@ function parseRoute() {
   if (parts[0] === "add") return { view: "edit", driver: parts[1] || "" };
   if (parts[0] === "edit" && parts[1]) return { view: "edit", id: parts[1] };
   if (parts[0] === "alerts") return { view: "alerts" };
-  if (["prometheus", "grafana", "homarr", "backup"].includes(parts[0])) return { view: parts[0] };
+  if (["prometheus", "grafana", "homarr", "automation", "backup"].includes(parts[0])) return { view: parts[0] };
   return { view: "overview" };
 }
 
@@ -71,8 +71,9 @@ function go() {
   if (route.view === "edit" && overview?.role === "viewer") { location.hash = "#/"; return toast("This account can only look", true); }
   if (route.view === "edit") openEditor();
   if (route.view === "overview") renderOverview();
-  if (["prometheus", "grafana", "homarr"].includes(route.view)) renderIntegration(route.view);
-  const title = { overview: "Overview", alerts: "Alerts", prometheus: "Prometheus", grafana: "Grafana", homarr: "Homarr", backup: "Backup",
+  if (["prometheus", "grafana", "homarr", "automation"].includes(route.view)) renderIntegration(route.view);
+  const title = { overview: "Overview", alerts: "Alerts", prometheus: "Prometheus", grafana: "Grafana", homarr: "Homarr",
+                  automation: "Automation", backup: "Backup",
                   edit: route.id ? "Edit server" : "Add a server" }[route.view];
   if (title) document.title = `${translate(title)} · Fan Control`;
   scrollTo(0, 0);
@@ -614,17 +615,38 @@ const cy = v => P.t + (1 - v / 100) * (CH - P.t - P.b);
 const ct = x => T_MIN + (x - P.l) / (CW - P.l - P.r) * (T_MAX - T_MIN);
 const cs = y => 100 * (1 - (y - P.t) / (CH - P.t - P.b));
 
+// What the curve follows: the hottest CPU, the exhaust air or any temperature sensor (a GPU, a disk bay)
+function curveNow() {
+  const src = draft.curve_source, sens = server?.sensors;
+  if (!src) return server?.cpu_temp;
+  if (src === "exhaust") return sens?.exhaust;
+  const v = (sens?.temps || []).filter(t => t.name === src).map(t => t.value);
+  return v.length ? Math.max(...v) : null;
+}
+function renderCurveSource() {
+  const sel = $("#curve-src");
+  if (document.activeElement === sel) return;
+  const names = [...new Set((server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name))];
+  const src = draft.curve_source;
+  if (src && src !== "exhaust" && !names.includes(src)) names.push(src);
+  sel.innerHTML = `<option value="">${translate("Hottest CPU")}</option><option value="exhaust">${translate("Exhaust air")}</option>` +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}${curveNow() == null && n === src ? " " + translate("(no reading)") : ""}</option>`).join("");
+  sel.value = src || "";
+}
+$("#curve-src").onchange = e => { draft.curve_source = e.target.value || null; touch(); };
+
 function renderCurve() {
+  renderCurveSource();
   const pts = [...draft.curve].sort((a, b) => a[0] - b[0]), fs = draft.failsafe_temp;
   let g = `<defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line y2="5" stroke="var(--accent)" stroke-opacity=".25"/></pattern></defs>`;
   for (let v = 0; v <= 100; v += 25) g += `<line class="g" x1="${P.l}" x2="${CW - P.r}" y1="${cy(v)}" y2="${cy(v)}"/><text x="${P.l - 6}" y="${cy(v) + 3.5}" text-anchor="end">${v}</text>`;
   for (let t = 30; t <= 90; t += 10) g += `<text x="${cx(t)}" y="${CH - 8}" text-anchor="middle">${fmt(tv(t))}°</text>`;
-  g += `<rect x="${cx(fs)}" y="${P.t}" width="${Math.max(0, CW - P.r - cx(fs))}" height="${CH - P.t - P.b}" fill="url(#hatch)"/>
+  if (!draft.curve_source) g += `<rect x="${cx(fs)}" y="${P.t}" width="${Math.max(0, CW - P.r - cx(fs))}" height="${CH - P.t - P.b}" fill="url(#hatch)"/>
     <line class="fs" x1="${cx(fs)}" x2="${cx(fs)}" y1="${P.t}" y2="${CH - P.b}"/>
     <text class="fs-text" x="${cx(fs) - 4}" y="${P.t + 10}" text-anchor="end">Auto ≥ ${fmt(tv(fs))}°</text>`;
   const line = [[T_MIN, pts[0][1]], ...pts, [T_MAX, pts[pts.length - 1][1]]].map(([t, v]) => `${cx(t).toFixed(1)},${cy(v).toFixed(1)}`);
   g += `<polygon class="area" points="${cx(T_MIN)},${cy(0)} ${line.join(" ")} ${cx(T_MAX)},${cy(0)}"/><polyline class="line" points="${line.join(" ")}"/>`;
-  const now = server?.cpu_temp;
+  const now = curveNow();
   if (now != null) {
     const sp = curveSpeed(draft.curve, now);
     g += `<line class="now-l" x1="${cx(now)}" x2="${cx(now)}" y1="${cy(sp)}" y2="${CH - P.b}"/>
@@ -816,9 +838,12 @@ function renderChart() {
     <path d="${path("cpu", yT)}" fill="none" stroke="var(--cool)" stroke-width="1.75" stroke-linejoin="round"/>
     <g id="cross" style="display:none"><line class="axis" y1="${pt}" y2="${H - pb}"/><circle r="3.5" fill="var(--cool)"/><circle r="3.5" fill="var(--accent)"/></g>`;
   if (!h.length) g += `<text x="${(W + pl - pr) / 2}" y="${H / 2}" text-anchor="middle">Collecting readings…</text>`;
+  // what happened, as ticks along the top (changes, failsafes, errors; not every speed step); hovering lists them
+  const marks = (server.events || []).filter(e => e.t >= start && !/^(Fans → |Dry run: )/.test(e.msg));
+  g += marks.map(e => `<line class="ev ${e.level}" x1="${x(e.t).toFixed(1)}" x2="${x(e.t).toFixed(1)}" y1="${pt}" y2="${pt + 9}"/>`).join("");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = g;
-  chart = { h, x, yT, yS, W, pl, pr, fanKey };
+  chart = { h, x, yT, yS, W, pl, pr, fanKey, marks };
   if (hoverX != null) showPoint(hoverX);  // a redraw every 5 s must not take the crosshair from under the pointer
 }
 
@@ -842,7 +867,9 @@ function showPoint(mx) {
     <div><span>Exhaust</span><span>${fmt(tv(p.exhaust))} ${tu()}</span></div>
     <div><span>Fans</span><span>${fan == null ? "Automatic" : fan + " %"}</span></div>
     ${p.rpm != null ? `<div><span>Fan speed</span><span>${p.rpm.toLocaleString()} rpm</span></div>` : ""}
-    <div><span>Power</span><span>${fmt(p.watts)} W</span></div>`;
+    <div><span>Power</span><span>${fmt(p.watts)} W</span></div>
+    ${chart.marks.filter(e => Math.abs(chart.x(e.t) - mx) <= 8).slice(0, 3)
+      .map(e => `<div class="ev-line ${e.level}"><span>${time(e.t)}</span><span>${esc(e.msg)}</span></div>`).join("")}`;
   tip.style.display = "block";
   tip.style.left = (X > r.width / 2 ? X - tip.offsetWidth - 14 : X + 14) + "px";
 }

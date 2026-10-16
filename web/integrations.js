@@ -1,4 +1,4 @@
-// Prometheus, Grafana, Homarr and Backup pages: generated snippets, live checks and previews.
+// Prometheus, Grafana, Homarr, Automation and Backup pages: generated snippets, live checks and previews.
 // Tokens are never sent to the browser, so snippets carry placeholders for them.
 let integ = null, grafanaPanels = null;
 
@@ -47,6 +47,34 @@ async function renderIntegration(view) {
   if (view === "prometheus") renderPrometheus();
   if (view === "grafana") renderGrafana();
   if (view === "homarr") renderHomarr();
+  if (view === "automation") renderAutomation();
+}
+
+// ---------------------------------------------------------------- Automation
+function renderAutomation() {
+  const rows = integ.tokens.filter(t => t.kind === "control").length;
+  setStatus("#au-status", rows > 0, rows ? `${rows} control token${rows > 1 ? "s" : ""}` : "Off");
+  renderTokens("control");
+  const s = integ.servers[0] || { id: "<server>", name: "Server" }, base = location.origin;
+  const post = (path, body) => `curl -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \\\n` +
+    `  -d '${body}' "${base}${path}?server=${s.id}"`;
+  $("#au-curl").textContent = [
+    `# what the server is doing\ncurl -H "Authorization: Bearer <token>" "${base}/api/state?server=${s.id}"`,
+    `# every fan at 30 %\n${post("/api/settings", '{"mode": "fixed", "fixed_speed": 30}')}`,
+    `# smart mode, CPU held at 65 °C\n${post("/api/settings", '{"mode": "smart", "smart_target": 65}')}`,
+    `# the fans to the BMC for 2 hours ({"minutes": 0} takes them back)\n${post("/api/handover", '{"minutes": 120}')}`,
+  ].join("\n\n");
+  const cmd = (path, payload) => [`    url: "${base}${path}?server=${s.id}"`, "    method: post", "    headers:",
+    "      Authorization: !secret fan_control_bearer", '    content_type: "application/json"', `    payload: '${payload}'`];
+  $("#au-ha").textContent = [
+    "rest_command:", "  fans_quiet:", ...cmd("/api/settings", '{"mode": "smart", "smart_target": 68}'),
+    "  fans_to_bmc:", ...cmd("/api/handover", '{"minutes": 120}'), "",
+    "sensor:", "  - platform: rest", `    name: "${s.name} CPU"`, `    resource: "${base}/api/overview"`,
+    "    headers:", "      Authorization: !secret fan_control_bearer",
+    `    value_template: "{{ (value_json.servers | selectattr('id', 'eq', '${s.id}') | first).cpu_temp }}"`,
+    '    unit_of_measurement: "°C"', "    scan_interval: 30", "",
+    "# secrets.yaml", 'fan_control_bearer: "Bearer <token>"',
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------- Prometheus
@@ -92,7 +120,7 @@ function renderTokens(kind) {
   const rows = integ.tokens.filter(t => t.kind === kind);
   const when = t => t ? new Date(t * 1000).toLocaleDateString() : translate("never");
   box.innerHTML = `
-    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate(kind === "widget" ? "Name, e.g. Homarr" : "Name, e.g. Prometheus")}"
+    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate({ widget: "Name, e.g. Homarr", metrics: "Name, e.g. Prometheus", control: "Name, e.g. Home Assistant" }[kind])}"
       aria-label="${translate("Token name")}" required><button class="btn">${translate("Create")}</button></form>` : ""}
     ${fresh[kind] ? `<div class="code"><pre id="tok-${kind}">${esc(fresh[kind])}</pre><button class="copy" data-copy="tok-${kind}">Copy</button></div>
       <p class="hint">${translate("Copy it now: only a hash of it is kept, so it is not shown again.")}</p>` : ""}
