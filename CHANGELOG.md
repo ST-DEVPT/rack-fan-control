@@ -3,6 +3,19 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.8.1] - 2026-10-16
+
+Safety, from a critical review of 2.6-2.8.
+
+- **Each fan's BMC minimum RPM is read and respected.** Under it the BMC logs an event, lights the amber LED
+  and may run every fan at full speed, and a minimum speed of 0 % or a calibration could get there. The fan
+  list shows it; the calibration goes no slower once a fan is within 15 % of it; a fan that reads under it
+  in normal control keeps the fans 5 % higher from then on; the minimum speed field warns from the
+  calibration's measurements.
+- **A control token can no longer weaken the protections**: the failsafe, the exhaust limit, the BMC
+  thresholds and their margin, the minimum speed and Dell's PCIe cooling are changed by an admin only. The
+  browser asked before such changes, but a script never did.
+
 ## [2.8.0] - 2026-10-16
 
 - **Automation page and control tokens**: Home Assistant, n8n, cron or a script can change fan settings and

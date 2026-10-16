@@ -255,6 +255,12 @@ Fans never run below the **minimum speed**: 20 % by default, anything from 0 % u
 fan that stops while the others spin still trips the failsafe. Supermicro boards never go below 25 %, where
 their fans would read under the BMC's lower critical RPM. The failsafe can be set up to 90 °C.
 
+**Each fan's BMC minimum.** The BMC defines a lowest RPM for each fan (`ipmitool sensor`, or Redfish's lower
+thresholds); under it, it logs an event, lights the amber LED and often runs every fan at full speed. The fan
+list shows it next to each fan (`/ ≥600`). When a fan reads under it at the speed Fan Control sent, the fans
+stay 5 % above that speed from then on (until a restart), and the event log says so. The minimum speed field
+warns when the calibration shows a fan would turn under its minimum at that speed.
+
 When the controller hands a Supermicro back, the BMC gets the fan mode it had before (Standard,
 Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` every server is released at
 the same time; the example compose file gives it 60 s (`stop_grace_period`), where Docker's default is 10 s.
@@ -303,7 +309,8 @@ slower (many fans have a floor of their own, so a lower setting only adds risk),
 every fan kept turning, and how many watts the fans cost at full speed; **Use N % as minimum speed** puts
 that into the settings. Every protection stays on while it runs. The failsafe, a fan that stops, a BMC that
 ignores a command, the CPU warming by 10 °C, a dry run or a hand-over stop it, and the steps measured
-until then still count. Quiet hours do not cap it: it was started by hand. It needs fans that report RPM.
+until then still count. It never takes a fan under its BMC minimum: it goes no slower once a fan is within
+15 % of it. Quiet hours do not cap it: it was started by hand. It needs fans that report RPM.
 
 ### Handing the fans to the BMC for a while
 
@@ -420,9 +427,10 @@ Dashboards → New → Import, and pick your Prometheus data source.
 <img alt="Embed widget" src="docs/embed.jpg" width="420">
 
 **Automation** (Home Assistant, n8n, cron, a script): on the Automation page, create a control token. It
-reads what a read-only account sees, changes fan settings and hands the fans to the BMC; it never sees BMC
-accounts and cannot change servers, alerts, tokens or backups, and every change it makes is logged with its
-name. The page fills in `curl` examples and a Home Assistant `rest_command` and sensor for your servers.
+reads what a read-only account sees, changes the mode, speeds and targets, and hands the fans to the BMC.
+The protections (failsafe, exhaust limit, BMC thresholds, minimum speed, Dell's PCIe cooling) stay with an
+admin: a leaked token cannot weaken them. It never sees BMC accounts and cannot change servers, alerts,
+tokens or backups, and every change it makes is logged with its name. The page fills in `curl` examples and a Home Assistant `rest_command` and sensor for your servers.
 
 ```bash
 curl -X POST -H "Authorization: Bearer <control token>" -H "Content-Type: application/json" \

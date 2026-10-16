@@ -23,6 +23,8 @@ from .server import SERVERS, registry_lock, save_dashboard_servers, stalled, sta
 from .widgets import WIDGET_FIELDS, homarr_widget, save_widget_fields, widget_fields, widget_view
 
 KEY = b""  # set by app.main() once the data folder is known to be writable
+# what stands between a mistake and a hot server: only an admin session changes these, never a control token
+PROTECTIONS = ("failsafe_temp", "exhaust_limit", "bmc_thresholds", "threshold_margin", "min_speed", "pcie_cooling")
 log = logging.getLogger("fanctl.web")
 
 # Sessions and sign-in throttling live in sessions.py; the names stay importable from here.
@@ -329,10 +331,15 @@ def post_settings(h):
     srv = server_or_404(h)
     if srv is None:
         return None
+    current = srv.settings()
     try:
-        s = validate_settings(h.body, srv.settings())
+        s = validate_settings(h.body, current)
     except (ValueError, TypeError) as e:
         return h.send(400, {"error": str(e)})
+    if h.role() != "admin":  # a control token: the protections stay as an admin set them
+        touched = [k for k in PROTECTIONS if s[k] != current[k]]
+        if touched:
+            return h.send(403, {"error": f"a control token cannot change {', '.join(touched)}; an admin can"})
     srv.save_settings(s, h.who())
     return h.send(200, s)
 

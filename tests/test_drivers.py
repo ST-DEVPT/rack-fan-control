@@ -123,6 +123,16 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
         s = parse_sdr(SDR, t)
         self.assertEqual([x["warn"] for x in s["temps"]], [42.0, 75.0, 85.0, 86.0])  # same-name CPUs keep their order
 
+    def test_fan_floors(self):
+        floors = drivers.parse_fan_floors(self.SENSOR + "\nFan2 RPM | 3600.000 | RPM | ok | na | 360.000 | na | na | na | na")
+        self.assertEqual(floors, {"Fan1 RPM": [600.0], "Fan2 RPM": [360.0]})  # non-critical, else critical
+        self.assertEqual([f["floor"] for f in parse_sdr(SDR, None, floors)["fans"]], [600.0, 360.0])
+        _, fans, _ = parse_redfish({"Fans": [{"Name": "Fan1", "Reading": 5400, "ReadingUnits": "RPM",
+                                              "LowerThresholdCritical": 1080},
+                                             {"Name": "Fan2", "Reading": 30, "ReadingUnits": "Percent",
+                                              "LowerThresholdCritical": 10}]})
+        self.assertEqual([f["floor"] for f in fans], [1080.0, None])  # a percentage has no RPM floor
+
     def test_ipmitool_exiting_1_after_the_list_still_gives_them(self):
         # iDRACs print every sensor, then exit 1 over one they cannot read (an empty CPU socket's)
         real = drivers.subprocess.run

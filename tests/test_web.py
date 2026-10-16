@@ -340,6 +340,15 @@ class HTTP(Base):
             self.assertEqual((st, SERVERS["rack-b"].settings()["fixed_speed"]), (200, 41))
             self.assertTrue(any('by token "HA" at ' in e["msg"] for e in SERVERS["rack-b"].events))
             self.assertEqual(self.req("POST", "/api/handover?server=rack-b", {"minutes": 0}, bearer)[0], 200)
+            full = SERVERS["rack-b"].settings()  # the whole settings back unchanged: fine
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-b", full, bearer)[0], 200)
+            for weaker in ({"failsafe_temp": 90}, {"exhaust_limit": None}, {"bmc_thresholds": False},
+                           {"min_speed": 10}, {"pcie_cooling": False}):
+                with self.subTest(weaker=weaker):
+                    st, _, data = self.req("POST", "/api/settings?server=rack-b", weaker, bearer)
+                    self.assertEqual(st, 403)
+                    self.assertIn("an admin can", json.loads(data)["error"])
+            self.assertEqual(SERVERS["rack-b"].settings()["failsafe_temp"], full["failsafe_temp"])
             for method, path in (("GET", "/api/servers/rack-b"), ("GET", "/api/export"), ("POST", "/api/tokens"),
                                  ("POST", "/api/alerts"), ("POST", "/api/calibrate?server=rack-b"),
                                  ("POST", "/api/servers/rack-b/delete")):

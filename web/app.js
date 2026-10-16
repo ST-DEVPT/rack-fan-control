@@ -276,7 +276,7 @@ function renderServer() {
     const pct = f.rpm != null ? f.rpm / maxRpm * 100 : f.pct;
     return `<tr><td>${esc(f.name)}${f.ok ? "" : ' <span class="muted">· alert</span>'}</td>
     <td class="bar"><div class="meter"><i style="width:${clamp(pct ?? 0, 0, 100)}%"></i></div></td>
-    <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}</td></tr>`;
+    <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}${f.floor ? `<small class="muted" title="${translate("BMC minimum")}"> / ≥${Math.round(f.floor)}</small>` : ""}</td></tr>`;
   }).join("") || '<tr class="empty"><td colspan="3">No readings</td></tr>';
   renderCalib();
   const handed = s.handed_until > Date.now() / 1000;
@@ -347,6 +347,9 @@ function renderControls() {
   if (document.activeElement !== $("#failsafe")) $("#failsafe").value = Math.round(tv(draft.failsafe_temp));
   if (document.activeElement !== $("#ramp")) $("#ramp").value = draft.ramp_down_seconds;
   if (document.activeElement !== $("#min-speed")) $("#min-speed").value = draft.min_speed;
+  const warn = minSpeedWarning();
+  $("#min-warn").hidden = !warn;
+  $("#min-warn").textContent = warn;
   if (document.activeElement !== $("#exhaust-limit")) $("#exhaust-limit").value = draft.exhaust_limit == null ? "" : Math.round(tv(draft.exhaust_limit));
   $("#margin-text").textContent = fmt(td(draft.threshold_margin));
   $$("#bmc-thr button").forEach(b => b.setAttribute("aria-pressed", b.dataset.thr === String(draft.bmc_thresholds)));
@@ -446,6 +449,26 @@ $("#smart-forget").onclick = async () => {
   toast("Smart mode starts learning afresh");
 };
 
+// The minimum speed against each fan's BMC minimum, from what the calibration measured: under it the
+// BMC logs an event, lights the amber LED and may run every fan at full speed.
+function minSpeedWarning() {
+  const c = server?.calibration, p = draft.min_speed;
+  const res = (c?.results || []).slice().sort((a, b) => a.pct - b.pct);
+  for (const f of (server?.sensors?.fans || []).filter(f => f.floor)) {
+    const pts = res.filter(r => r.fans?.[f.name] != null).map(r => [r.pct, r.fans[f.name]]);
+    if (pts.length < 2) continue;
+    if (p < pts[0][0]) {
+      if (/BMC minimum/.test(c.reason || "")) return `Below ${pts[0][0]} % ${f.name} nears its BMC minimum of ${Math.round(f.floor)} RPM.`;
+      continue;
+    }
+    const i = Math.max(1, pts.findIndex(q => q[0] >= p));
+    const [[p0, r0], [p1, r1]] = [pts[i - 1], pts[i]];
+    const rpm = Math.round(p1 === p0 ? r1 : r0 + (r1 - r0) * (p - p0) / (p1 - p0));
+    if (rpm < f.floor) return `At ${p} % ${f.name} would turn about ${rpm} RPM, under its BMC minimum of ${Math.round(f.floor)} RPM: the BMC may raise an alarm and run every fan at full speed.`;
+  }
+  return "";
+}
+
 // fan calibration: start it, follow it, and use what it found
 const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
 function renderCalib() {
@@ -462,6 +485,8 @@ function renderCalib() {
     : c.status === "done" ? (c.suggested == null ? `Calibrated on ${when}. No speed kept every fan turning.`
       : `Calibrated on ${when}. ${c.floor > res.at(-1).pct ? `Below ${c.floor} % the fans turn no slower.` : "The fans slow down at every step."} Suggested minimum speed: ${c.suggested} %.`)
     : `Stopped at ${c.at} %: ${c.reason}.` + (c.suggested != null ? ` Every fan kept turning down to ${c.suggested} %.` : "");
+  $("#calib-note").hidden = !(c?.status === "done" && c.reason);
+  if (c?.status === "done" && c.reason) $("#calib-note").textContent = `The calibration went no slower: ${c.reason}.`;
   const power = !running && c?.fan_watts >= 5;  // under that, the readings' own noise
   $("#calib-power").hidden = !power;
   if (power) $("#calib-power").textContent = `At 100 % the fans draw about ${c.fan_watts} W more than at ${res.at(-1).pct} %.`;

@@ -62,6 +62,7 @@ class Server:
         self.missing = {}          # known sensor -> readings in a row it has been absent
         self.blind_tried = 0       # last attempt to hand the fans back while the BMC could not be read
         self.told_thresholds = False
+        self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
         self.resume_until = 0      # easing out of a failsafe until then
         self.saved = time.time()
         self.bad_settings = None  # last validation error of the settings file, logged once
@@ -201,6 +202,7 @@ class Server:
     CALIB_EVERY = 5      # s between readings while it runs
     CALIB_WARMING = 10   # °C the CPU may warm before it stops
     CALIB_STOPPED = 300  # RPM under which a fan counts as stopped (as failed_fans has it)
+    CALIB_MARGIN = 1.15  # no slower step once a fan is within 15 % of its BMC minimum
 
     def load_calibration(self):
         c = read_json(self.calib_file, None, f"fan calibration of {self.name}")
@@ -261,6 +263,14 @@ class Server:
             if why:
                 self.finish_calibration("stopped", why)
                 return None
+            # under a fan's lower threshold the BMC logs an event, lights the amber LED and may run every
+            # fan at full speed: never go there, and never one step closer than CALIB_MARGIN above it
+            floors = {f["name"]: f["floor"] for f in sensors["fans"] if f.get("floor")}
+            under = next((n for n, (rpm, _) in rpms.items() if n in floors and rpm < floors[n]), None)
+            if under:
+                self.finish_calibration("done" if c["results"] else "stopped",
+                                        f"{under} went under its BMC minimum of {floors[under]:.0f} RPM")
+                return None
             if now - c["since"] >= self.CALIB_SETTLE:
                 c["samples"].append({"rpm": rpms, "watts": sensors["watts"]})
                 if len(c["samples"]) >= self.CALIB_SAMPLES:
@@ -273,6 +283,11 @@ class Server:
                                          "fans": fans, "ok": ok,
                                          "watts": round(sum(watts) / len(watts)) if watts else None})
                     c["i"], c["since"], c["samples"] = c["i"] + 1, now, []
+                    near = next((n for n, rpm in fans.items() if n in floors and rpm < floors[n] * self.CALIB_MARGIN), None)
+                    if near:
+                        self.finish_calibration("done", f"{near} turned {fans[near]} RPM, close to its BMC minimum of "
+                                                        f"{floors[near]:.0f} RPM")
+                        return None
                     if c["i"] == len(c["steps"]):
                         self.finish_calibration("done")
                         return None
@@ -292,6 +307,8 @@ class Server:
                 break
             spinning = r["pct"]
         if status == "done":
+            if reason:  # ended before 0 %: the steps measured until then stand
+                self.log(f"Fan calibration went no slower: {reason}")
             slowest = res[-1]["rpm"]
             c["floor"] = max(r["pct"] for r in res if r["rpm"] <= slowest * 1.05)  # below it, no slower
             c["suggested"] = None if spinning is None else max(c["floor"], spinning)
@@ -504,6 +521,9 @@ class Server:
         if speed < floor:  # below this some BMCs see a stalled fan and go to full speed
             speed = floor
             reason += f", {self.driver.vendor} floor {floor}%"
+        if speed < self.rpm_floor:
+            speed = self.rpm_floor
+            reason += f", BMC fan minimum {speed}%"
         return speed, reason
 
     def command(self, settings, effective, speed, reason, dry):
@@ -574,6 +594,8 @@ class Server:
                 notify(self, "failsafe_cleared", **vals)
             self.check_limits(sensors, cpu, failsafe, vals, now)
             self.check_fans(sensors["fans"], vals)
+            if prev["effective"] == "manual" and not dry and not self.calibrating():
+                self.check_fan_floors(sensors["fans"], prev["applied_speed"])
             self.check_response(effective if not dry else "dry", speed, sensors["fans"], vals)
             self.state.update(sensors=sensors, cpu_temp=cpu, effective=effective, applied_speed=speed,
                               target_speed=target, reason=reason, failsafe=failsafe, error=error,
@@ -609,6 +631,17 @@ class Server:
                 notify(self, "failsafe_long", **vals, minutes=f"{minutes:.0f}")
         else:
             self.failsafe_since, self.failsafe_told = None, False
+
+    def check_fan_floors(self, fans, speed):
+        """A fan under its BMC minimum at the speed last sent: the BMC logs it, lights the amber LED and
+        may run every fan at full speed. From then on this server's fans stay 5 % above that speed,
+        until Fan Control restarts. Called with self.lock held."""
+        low = next((f for f in fans if f.get("floor") and f["rpm"] is not None and f["rpm"] < f["floor"]), None)
+        if low is None or speed is None or speed + 5 <= self.rpm_floor:
+            return
+        self.rpm_floor = min(60, speed + 5)
+        self.log(f"{low['name']} turned {low['rpm']} RPM at {speed}%, under its BMC minimum of {low['floor']:.0f} RPM; "
+                 f"the fans stay at {self.rpm_floor}% or more", "warn")
 
     def check_fans(self, fans, vals):
         """A fan that stops while the others spin. Two readings in a row, so one odd value is ignored.

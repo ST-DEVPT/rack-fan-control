@@ -82,7 +82,27 @@ def parse_thresholds(text):
     return out
 
 
-def parse_sdr(text, thresholds=None):
+def parse_fan_floors(text):
+    """Each fan's lower threshold from `ipmitool sensor`, as {name: [rpm, ...]} in sensor order: below it
+    the BMC logs an event, lights the amber LED and often runs every fan at full speed. The lower
+    non-critical one when the BMC defines it, else the lower critical one."""
+    out = {}
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 10 or parts[2] != "RPM":
+            continue
+        floor = None
+        for col in (parts[6], parts[5]):
+            try:
+                floor = float(col)
+                break
+            except ValueError:
+                pass
+        out.setdefault(parts[0], []).append(floor if floor and floor > 0 else None)
+    return out
+
+
+def parse_sdr(text, thresholds=None, fan_floors=None):
     """Parse `ipmitool sdr elist full`. Line shape: 'Inlet Temp | 04h | ok | 7.1 | 23 degrees C'.
     Entity 3.x is a processor. Names differ between generations ("Inlet Temp" vs "Ambient Temp",
     "Fan1A RPM" vs "FAN MOD 1A RPM"), so inlet/exhaust are matched by pattern."""
@@ -105,7 +125,10 @@ def parse_sdr(text, thresholds=None):
                           "cpu": entity.startswith("3.") or bool(re.match(r"CPU\d* Temp", name)),
                           "ok": status == "ok", "warn": warns[n] if n < len(warns) else None})
         elif unit == "RPM":
-            fans.append({"name": re.sub(r"\s*RPM$", "", name), "rpm": int(value), "pct": None, "ok": status == "ok"})
+            n = seen[name] = seen.get(name, -1) + 1
+            floors = (fan_floors or {}).get(name, [])
+            fans.append({"name": re.sub(r"\s*RPM$", "", name), "rpm": int(value), "pct": None, "ok": status == "ok",
+                         "floor": floors[n] if n < len(floors) else None})
         elif unit == "Watts" and watts is None:
             watts = value
     return finish(temps, fans, watts)
@@ -135,9 +158,11 @@ def parse_redfish(thermal, power=None):
             continue
         unit = (f.get("ReadingUnits") or f.get("Units") or "").lower()
         is_pct = unit.startswith("percent") or (not unit and reading <= 100)
+        low = f.get("LowerThresholdNonCritical") or f.get("LowerThresholdCritical")
         fans.append({"name": f.get("Name") or f.get("FanName") or "Fan",
                      "rpm": None if is_pct else int(reading), "pct": int(reading) if is_pct else None,
-                     "ok": (f.get("Status") or {}).get("Health", "OK") in ("OK", None)})
+                     "ok": (f.get("Status") or {}).get("Health", "OK") in ("OK", None),
+                     "floor": float(low) if not is_pct and isinstance(low, (int, float)) and low > 0 else None})
     watts = None
     for pc in (power or {}).get("PowerControl", []):
         if pc.get("PowerConsumedWatts") is not None:
@@ -217,6 +242,7 @@ class IPMIDriver(Driver):
     thresholds = None  # read once: `ipmitool sensor` is slow and thresholds don't change
     thresholds_at = 0  # when they were last tried, to retry a failed read every 10 min
     thresholds_error = ""  # why they could not be read, for the log
+    fan_floors = None  # each fan's lower RPM threshold, read with the temperature thresholds
 
     def diagnose(self):
         out = {}
@@ -234,11 +260,12 @@ class IPMIDriver(Driver):
             try:
                 # iDRACs list every sensor, then exit 1 over one they cannot read (an empty CPU socket's,
                 # a PSU's): the list is still good
-                self.thresholds = parse_thresholds(self.ipmi("sensor", timeout=90, partial=True))
+                text = self.ipmi("sensor", timeout=90, partial=True)
+                self.thresholds, self.fan_floors = parse_thresholds(text), parse_fan_floors(text)
                 self.thresholds_error = "" if self.thresholds else "no temperature sensor in `ipmitool sensor`"
             except DriverError as e:
                 self.thresholds, self.thresholds_error = {}, str(e)
-        data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds)
+        data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds, self.fan_floors)
         data["power"] = "on" if "is on" in self.ipmi("chassis", "power", "status") else "off"
         if self.model is None:
             try:
@@ -632,7 +659,8 @@ class DemoDriver(Driver):
                  f"Temp | 0Fh | ok | 3.2 | {cpu - 3:.0f} degrees C",
                  f"Pwr Consumption | 77h | ok | 7.1 | {100 + cpu + random.uniform(-2, 2):.0f} Watts"]
         lines += [f"Fan{i} RPM | 3{i}h | ok | 7.1 | {rpm + random.randint(-60, 60)} RPM" for i in range(1, 7)]
-        data = parse_sdr("\n".join(lines), {"Inlet Temp": [42.0], "Exhaust Temp": [70.0], "Temp": [90.0, 90.0]})
+        data = parse_sdr("\n".join(lines), {"Inlet Temp": [42.0], "Exhaust Temp": [70.0], "Temp": [90.0, 90.0]},
+                         {f"Fan{i} RPM": [600.0] for i in range(1, 7)})
         data["power"] = "on"
         return data
 

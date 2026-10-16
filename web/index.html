@@ -173,6 +173,7 @@
         <div class="f">
           <label for="min-speed">Minimum speed<small>Fans never go below this in fixed, curve and smart modes. Cards without a sensor rely on it</small></label>
           <div class="num"><input type="number" id="min-speed" min="0" max="60" step="1"><span class="muted">%</span></div>
+          <small class="min-warn" id="min-warn" role="status" hidden></small>
         </div>
         <div class="f quiet-row">
           <label>Quiet hours<small>Caps the fan speed overnight. The failsafe still applies at any hour</small></label>
@@ -245,6 +246,7 @@
       <table><thead><tr><th>Sensor</th><th></th><th class="r" id="fan-unit">RPM</th></tr></thead><tbody id="fans"></tbody></table>
       <div class="calib" id="calib" hidden>
         <p class="help" id="calib-text">Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.</p>
+        <p class="help" id="calib-note" hidden></p>
         <p class="help" id="calib-power" hidden></p>
         <div class="curve-box" id="calib-chart" hidden><svg id="calib-svg" viewBox="0 0 400 140" aria-label="Fan RPM at each speed"></svg></div>
         <div class="calib-actions">
@@ -480,9 +482,9 @@
     <div class="int-main">
       <section class="int-step">
         <h2><span class="n">1</span> Create a control token</h2>
-        <p>It reads what a read-only account sees, changes fan settings and hands the fans to the BMC. It never
-          sees BMC accounts and cannot change servers, alerts, tokens or backups. Every change it makes is logged
-          with its name.</p>
+        <p>It reads what a read-only account sees, changes the mode, speeds and targets, and hands the fans to the
+          BMC. The protections (failsafe, limits, minimum speed) stay with an admin. It never sees BMC accounts and
+          cannot change servers, alerts, tokens or backups. Every change it makes is logged with its name.</p>
         <div class="tokens" data-kind="control"></div>
       </section>
       <section class="int-step">
@@ -501,7 +503,7 @@
       <table class="metric-table"><tbody>
         <tr><td><code>GET /api/overview</code></td><td>Every server, briefly</td></tr>
         <tr><td><code>GET /api/state</code></td><td>One server in full, with its history</td></tr>
-        <tr><td><code>POST /api/settings</code></td><td>Mode, speeds, targets, limits, quiet hours</td></tr>
+        <tr><td><code>POST /api/settings</code></td><td>Mode, speeds, targets, quiet hours; not the protections</td></tr>
         <tr><td><code>POST /api/handover</code></td><td>The fans to the BMC for some minutes; 0 takes them back</td></tr>
       </tbody></table>
       <p data-i18n="au-server" class="hint">Add <code>?server=</code> with the server's id. The protections apply to every change, whoever makes it.</p>

@@ -272,6 +272,17 @@ class FailSafe(unittest.TestCase):
         self.assertFalse(srv.state["failsafe"])
         self.assertEqual(srv.calls[-1], 50)           # back to manual from 50 %, not straight to 30 %
 
+    def test_a_fan_under_its_bmc_minimum_raises_the_floor(self):
+        srv = Scripted("fs-rpmfloor", {"mode": "fixed", "fixed_speed": 10, "min_speed": 0})
+        slow = [{"name": f"Fan{i}", "rpm": 500, "pct": None, "ok": True, "floor": 600} for i in (1, 2, 3)]
+        srv.answers = [reading(self.OK, slow)]
+        srv.cycle()                                   # 10 % sent
+        srv.cycle()                                   # its reading: 500 RPM, under 600
+        srv.cycle()
+        self.assertEqual((srv.rpm_floor, srv.calls[-1]), (15, 15))
+        self.assertIn("BMC fan minimum 15%", srv.state["reason"])
+        self.assertIn("under its BMC minimum of 600 RPM", srv.events[1]["msg"] + srv.events[0]["msg"])
+
     def test_vendor_floor(self):
         srv = Scripted("fs-floor", {"mode": "fixed", "fixed_speed": 20})
         srv.driver.min_speed, srv.driver.vendor = 25, "Supermicro"
@@ -323,6 +334,25 @@ class Calibration(unittest.TestCase):
         self.assertEqual((c["status"], c["at"]), ("stopped", 5))
         self.assertEqual(c["reason"], "the failsafe took over (fan Fan2 failed)")
         self.assertEqual((c["suggested"], srv.calls[-1]), (10, "auto"))
+
+    def test_never_goes_under_a_fans_bmc_minimum(self):
+        srv = Scripted("cal-floor")
+        rpm = lambda pct, i: 1000 + 50 * pct                                # 2000 at 20 %, 1750 at 15 %
+        fans = lambda pct: [{"name": f"Fan{i}", "rpm": rpm(pct, i), "pct": None, "ok": True, "floor": 1600}
+                            for i in (1, 2)]
+        srv.answers = [reading(self.OK, fans(30))]
+        srv.cycle()
+        srv.CALIB_SETTLE = 0
+        self.assertIsNone(srv.start_calibration())
+        for _ in range(100):
+            if not srv.calibrating():
+                break
+            srv.answers = [reading(self.OK, fans(srv.calib["steps"][srv.calib["i"]]))]
+            srv.cycle()
+        c = srv.calib
+        self.assertEqual((c["status"], c["results"][-1]["pct"]), ("done", 15))  # 1750 RPM: within 15 % of 1600
+        self.assertIn("close to its BMC minimum of 1600 RPM", c["reason"])
+        self.assertNotIn(10, srv.calls)                                     # 1500 RPM was never asked for
 
     def test_stops_when_the_cpu_warms(self):
         srv = Scripted("cal-warm")
