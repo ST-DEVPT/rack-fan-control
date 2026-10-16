@@ -7,3 +7,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 // GET without data, POST JSON with it; never served from the browser cache
 const api = (url, data) => fetch(url, data === undefined ? { cache: "no-store" } :
   { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+// Why a request failed, in words: Fan Control's own error, or the status when the answer is not Fan
+// Control's (a reverse proxy's error page, when Fan Control did not answer it)
+const failure = async r => (await r.json().catch(() => ({}))).error ||
+  (r.status >= 502 && r.status <= 504 ? `Fan Control did not answer the proxy (HTTP ${r.status})` : `HTTP ${r.status}`);

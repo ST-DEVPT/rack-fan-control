@@ -123,6 +123,27 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
         s = parse_sdr(SDR, t)
         self.assertEqual([x["warn"] for x in s["temps"]], [42.0, 75.0, 85.0, 86.0])  # same-name CPUs keep their order
 
+    def test_ipmitool_exiting_1_after_the_list_still_gives_them(self):
+        # iDRACs print every sensor, then exit 1 over one they cannot read (an empty CPU socket's)
+        real = drivers.subprocess.run
+        drivers.subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 1, self.SENSOR, "Unable to read sensor Temp: Device Not Present") if "sensor" in cmd else \
+            subprocess.CompletedProcess(cmd, 0, SDR if "sdr" in cmd else "Chassis Power is on", "")
+        try:
+            d = drivers.DellDriver("10.0.0.9", "root", "calvin")
+            d.model = ""
+            s = d.read()
+        finally:
+            drivers.subprocess.run = real
+        self.assertEqual((d.thresholds["Temp"], d.thresholds_error), ([85.0, 86.0], ""))
+        self.assertEqual(s["temps"][0]["warn"], 42.0)
+        with self.assertRaises(DriverError):  # anything else still fails on an error
+            drivers.subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "partial", "Error")
+            try:
+                d.ipmi("sdr", "elist", "full")
+            finally:
+                drivers.subprocess.run = real
+
     def test_redfish(self):
         temps, _, _ = parse_redfish({"Temperatures": [
             {"Name": "PCI 1", "ReadingCelsius": 50, "UpperThresholdCritical": 100, "UpperThresholdFatal": 110},

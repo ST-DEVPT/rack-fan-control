@@ -14,6 +14,8 @@ function toast(msg, error) {
   t.textContent = msg; t.className = "toast show" + (error ? " error" : "");
   clearTimeout(toast.h); toast.h = setTimeout(() => t.className = "toast", 3200);
 }
+// whatever a button's handler did not catch (a request that never got an answer, say) is said, not swallowed
+addEventListener("unhandledrejection", e => toast(`Error: ${e.reason?.message || e.reason}`, true));
 
 function curveSpeed(curve, temp) {
   const p = [...curve].sort((a, b) => a[0] - b[0]);
@@ -431,7 +433,7 @@ function renderSmart() {
 $("#smart-forget").onclick = async () => {
   if (!confirm(translate("Forget what smart mode learned about this server? It learns again as it runs."))) return;
   const r = await api("/api/smart/forget?server=" + encodeURIComponent(server.id), {});
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not forget", true);
+  if (!r.ok) return toast(await failure(r), true);
   server.smart_map = [];
   renderSmart();
   toast("Smart mode starts learning afresh");
@@ -478,8 +480,8 @@ $("#save").onclick = async () => {
   $("#save").disabled = true;
   try {
     const r = await api("/api/settings?server=" + encodeURIComponent(server.id), draft);
+    if (!r.ok) throw new Error(await failure(r));
     const body = await r.json();
-    if (!r.ok) throw new Error(body.error);
     dirty = false; draft = body;
     toast("Settings applied");
     renderControls();

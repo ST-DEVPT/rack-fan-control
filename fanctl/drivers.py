@@ -195,7 +195,9 @@ class IPMIDriver(Driver):
     description = "Any BMC that answers IPMI over LAN: temperatures, fans and power. Monitoring only."
     monitor_reason = "IPMI has no standard command for fan speed"
 
-    def ipmi(self, *args, timeout=20):
+    def ipmi(self, *args, timeout=20, partial=False):
+        """Run ipmitool. partial: keep what it printed even when it exits with an error, for listings
+        where one unreadable sensor fails the whole command after every other line came out."""
         if self.host == "local":
             cmd = ["ipmitool", "-I", "open", *args]
         else:
@@ -206,7 +208,7 @@ class IPMIDriver(Driver):
                                env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
         except (OSError, subprocess.TimeoutExpired) as e:
             raise DriverError(str(e)) from e
-        if r.returncode != 0:
+        if r.returncode != 0 and not (partial and r.stdout.strip()):
             msg = (r.stderr or r.stdout).strip() or f"ipmitool exit {r.returncode}"
             hint = next((h for code, h in HINTS.items() if code in msg), None)
             raise DriverError(f"{msg} ({hint})" if hint else msg)
@@ -214,6 +216,7 @@ class IPMIDriver(Driver):
 
     thresholds = None  # read once: `ipmitool sensor` is slow and thresholds don't change
     thresholds_at = 0  # when they were last tried, to retry a failed read every 10 min
+    thresholds_error = ""  # why they could not be read, for the log
 
     def diagnose(self):
         out = {}
@@ -229,9 +232,12 @@ class IPMIDriver(Driver):
         if self.thresholds is None or (not self.thresholds and time.time() - self.thresholds_at > 600):
             self.thresholds_at = time.time()
             try:
-                self.thresholds = parse_thresholds(self.ipmi("sensor", timeout=60))
-            except DriverError:
-                self.thresholds = {}
+                # iDRACs list every sensor, then exit 1 over one they cannot read (an empty CPU socket's,
+                # a PSU's): the list is still good
+                self.thresholds = parse_thresholds(self.ipmi("sensor", timeout=90, partial=True))
+                self.thresholds_error = "" if self.thresholds else "no temperature sensor in `ipmitool sensor`"
+            except DriverError as e:
+                self.thresholds, self.thresholds_error = {}, str(e)
         data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds)
         data["power"] = "on" if "is on" in self.ipmi("chassis", "power", "status") else "off"
         if self.model is None:

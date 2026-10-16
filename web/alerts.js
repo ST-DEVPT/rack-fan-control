@@ -200,7 +200,8 @@ $("#al-chips").addEventListener("click", e => {
   aTouch();
 });
 $("#al-reset").onclick = async () => {
-  const r = await fetch("/api/alerts", { cache: "no-store" });  // defaults are not in the draft; ask the server
+  const r = await api("/api/alerts");  // defaults are not in the draft; ask the server
+  if (!r.ok) return toast(await failure(r), true);
   const fresh = await r.json();
   const def = fresh.defaults[aKind];
   if (def.title) { aDraft.events[aKind].title = def.title; aDraft.events[aKind].message = def.message; }
@@ -212,9 +213,13 @@ $("#al-reset").onclick = async () => {
 
 $("#al-save").onclick = async () => {
   $("#al-save").disabled = true;
-  const r = await api("/api/alerts", alertsBody());
+  const r = await api("/api/alerts", alertsBody()).catch(() => null);
+  if (!r?.ok) {
+    toast("Could not save: " + (r ? await failure(r) : translate("Fan Control did not answer. Nothing was saved.")), true);
+    $("#al-save").disabled = false;
+    return;
+  }
   const res = await r.json();
-  if (!r.ok) { toast("Could not save: " + res.error, true); $("#al-save").disabled = false; return; }
   alerts = res; aDraft = structuredClone(res); newWebhook = undefined; newSecrets = {}; aDirty = false;
   $("#al-webhook").value = "";
   $$("#channels input[type=password]").forEach(i => i.value = "");
@@ -225,7 +230,7 @@ $("#al-discard").onclick = () => loadAlerts();
 $("#al-test").onclick = async () => {
   $("#al-test").disabled = true;
   const r = await api("/api/test-alert", { kind: aKind, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + (await r.json()).error, !r.ok);
+  toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + await failure(r), !r.ok);
   $("#al-test").disabled = false;
 };
 
@@ -257,7 +262,7 @@ $("#channels").addEventListener("click", async e => {
   const c = b.closest(".ch").dataset.ch, kind = aKind === "report" ? "failsafe" : aKind;
   b.disabled = true;
   const r = await api("/api/test-alert", { kind, channel: c, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + (await r.json()).error, !r.ok);
+  toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + await failure(r), !r.ok);
   b.disabled = false;
 });
 

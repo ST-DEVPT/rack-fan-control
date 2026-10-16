@@ -46,7 +46,7 @@ const PT = {
   "Control": "Controlo", "Fixed": "Fixa", "Curve": "Curva", "Smart": "Smart",
   "Learned: the speed each power draw needs": "Aprendido: a velocidade que cada consumo pede", "Forget": "Esquecer",
   "Forget what smart mode learned about this server? It learns again as it runs.": "Esquecer o que o modo smart aprendeu sobre este servidor? Volta a aprender enquanto corre.",
-  "Smart mode starts learning afresh": "O modo smart recomeça a aprender", "Could not forget": "Não foi possível esquecer",
+  "Smart mode starts learning afresh": "O modo smart recomeça a aprender",
   "Holds the CPU at the target with as little fan as it can, and keeps every other sensor clear of its limits. It learns the speed each load needs, sees heat coming before it arrives, and rides out short bursts instead of hunting.":
     "Mantém o CPU no alvo com o mínimo de ventoinha possível e mantém os outros sensores longe dos limites. Aprende a velocidade que cada carga pede, vê o calor a chegar antes de ele chegar e aguenta picos curtos sem andar para cima e para baixo.",
   "Fans speed up at once, slow down only after lower demand lasts this long": "As ventoinhas aceleram logo e só abrandam depois de a procura baixar durante este tempo",
@@ -77,7 +77,7 @@ const PT = {
   "Status and mode": "Estado e modo", "CPU temperature": "Temperatura do CPU",
   "Last hour chart": "Gráfico da última hora",
   "Server model": "Modelo do servidor", "Nothing is shared yet.": "Ainda não partilha nada.", "Widgets updated": "Widgets atualizados",
-  "Could not build the widget": "Não foi possível gerar o widget", "Could not save": "Não foi possível guardar",
+  "Could not save": "Não foi possível guardar",
   "Turn on widgets": "Ativar widgets", "Choose what widgets may show": "Escolha o que os widgets podem mostrar",
   "The token reads these and nothing else: never the BMC address, settings, events or error messages.":
     "O token lê isto e nada mais: nunca o endereço do BMC, definições, eventos ou mensagens de erro.",
@@ -308,7 +308,7 @@ const PT_PATTERNS = [
   [/^Could not hand the fans back to the BMC: (.+)$/, "Não foi possível devolver as ventoinhas ao BMC: $1"],
   [/^The settings file was corrupt and was kept aside; .+$/, "O ficheiro de definições estava corrompido e foi guardado à parte; o BMC controla as ventoinhas até aplicar as definições de novo"],
   [/^Saved settings are invalid \((.+)\); the BMC controls the fans$/, "As definições guardadas são inválidas ($1); o BMC controla as ventoinhas"],
-  [/^The BMC's warning thresholds could not be read; .+$/, "Não foi possível ler os limites de aviso do BMC; a proteção segue os limites do CPU e da saída de ar até ser possível (nova tentativa a cada 10 min)"],
+  [/^The BMC's warning thresholds could not be read( \(.+\))?; .+$/, "Não foi possível ler os limites de aviso do BMC$1; a proteção segue os limites do CPU e da saída de ar até ser possível (nova tentativa a cada 10 min)"],
   [/^Started: (.+)$/, "Iniciado: $1"],
   [/^Can't reach Fan Control\. Readings below are from (.+)\.$/, "Sem ligação ao Fan Control. As leituras abaixo são das $1."], [/^Between (.+) and (.+)$/, "Entre $1 e $2"], [/^v(.+) available$/, "v$1 disponível"], [/^Could not save: (.+)$/, "Não foi possível guardar: $1"],
   [/^Test "(.+)" sent to (ntfy|gotify|webhook)$/, "Teste \"$1\" enviado para $2"],
@@ -321,6 +321,8 @@ const PT_PATTERNS = [
   [/^Connection settings changed by (.+)$/, "Dados de ligação alterados por $1"],
   [/^(.+) loaded\. Apply to use it$/, "$1 carregada. Aplique para a usar"],
   [/^Curve copied from (.+)\. Apply to use it$/, "Curva copiada de $1. Aplique para a usar"],
+  [/^Fan Control did not answer the proxy \(HTTP (\d+)\)$/, "O Fan Control não respondeu ao proxy (HTTP $1)"],
+  [/^Test failed: (.+)$/, "O teste falhou: $1"], [/^Error: (.+)$/, "Erro: $1"],
   [/^Could not apply: (.+)$/, "Não foi possível aplicar: $1"], [/^(.+) added$/, "$1 adicionado"], [/^(.+) removed$/, "$1 removido"],
 ];
 

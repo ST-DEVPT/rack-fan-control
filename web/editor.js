@@ -77,8 +77,8 @@ $("#sc-form").onsubmit = async e => {
   $("#sc-go").disabled = true;
   try {
     const r = await api("/api/servers/scan", { range });
+    if (!r.ok) throw new Error(await failure(r));
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error);
     box.innerHTML = d.found.length ? `<table class="scan-table"><thead><tr><th>Address</th><th>BMC</th><th>Answers</th><th>Suggested</th><th></th></tr></thead><tbody>` +
       d.found.map(f => {
         const drv = overview.drivers.find(x => x.kind === f.suggested);
@@ -199,7 +199,7 @@ $("#e-form").onsubmit = async e => {
 $("#e-delete").onclick = async () => {
   if (!confirm(`Remove ${editing.name}? Its fans go back to automatic control, and its settings and history are deleted.`)) return;
   const r = await api("/api/servers/" + encodeURIComponent(editing.id) + "/delete", {});
-  if (!r.ok) return toast((await r.json()).error, true);
+  if (!r.ok) return toast(await failure(r), true);
   toast(`${editing.name} removed`);
   await pollOverview();
   location.hash = "#/";

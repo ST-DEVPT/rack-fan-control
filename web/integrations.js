@@ -105,15 +105,15 @@ function renderTokens(kind) {
   if (form) form.onsubmit = async e => {
     e.preventDefault();
     const r = await api("/api/tokens", { name: form.name.value, kind });
+    if (!r.ok) return toast(await failure(r), true);
     const d = await r.json();
-    if (!r.ok) return toast(d.error, true);
     fresh[kind] = d.token;
     await renderIntegration(route.view);
   };
   box.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
     if (!confirm(translate(`Revoke ${b.dataset.name}? Whatever uses it stops working.`))) return;
     const r = await api("/api/tokens/revoke", { id: b.dataset.revoke });
-    if (!r.ok) return toast((await r.json()).error, true);
+    if (!r.ok) return toast(await failure(r), true);
     toast("Token revoked");
     await renderIntegration(route.view);
   });
@@ -178,7 +178,7 @@ $("#hm-download").addEventListener("click", async e => {
   // check the address first, so a typo shows here and not as an unreadable download
   e.preventDefault();
   const r = await api($("#hm-download").getAttribute("href"));
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not build the widget", true);
+  if (!r.ok) return toast(await failure(r), true);
   const url = URL.createObjectURL(await r.blob());
   const a = Object.assign(document.createElement("a"), { href: url, download: "fan-control-homarr-widget.json" });
   document.body.append(a); a.click(); a.remove();
@@ -187,7 +187,7 @@ $("#hm-download").addEventListener("click", async e => {
 $("#hm-fields").addEventListener("change", async () => {
   const fields = $$("#hm-fields input:checked").map(i => i.dataset.field);
   const r = await api("/api/widget-config", { fields });
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not save", true);
+  if (!r.ok) return toast("Could not save: " + await failure(r), true);
   integ.widget_fields = (await r.json()).fields;
   toast("Widgets updated");
   renderHomarr();
@@ -236,9 +236,9 @@ $("#bk-file").onchange = async e => {
 $("#bk-import").onclick = async () => {
   $("#bk-import").disabled = true;
   const r = await api("/api/import", { data: backup });
-  const d = await r.json();
   const res = $("#bk-preview");
-  if (!r.ok) { res.className = "result bad"; res.textContent = d.error; return; }
+  if (!r.ok) { res.className = "result bad"; res.textContent = await failure(r); $("#bk-import").disabled = false; return; }
+  const d = await r.json();
   res.className = "result ok";
   res.innerHTML = [d.added.length && `Added: ${esc(d.added.join(", "))}.`, d.updated.length && `Updated: ${esc(d.updated.join(", "))}.`,
     d.skipped.length && `Skipped: ${esc(d.skipped.join("; "))}.`].filter(Boolean).join(" ") || "Nothing to change.";

@@ -263,8 +263,9 @@ class Server:
         self.state["model"] = self.driver.model or self.state["model"]
         if getattr(self.driver, "thresholds", None) == {} and not self.told_thresholds:
             self.told_thresholds = True
-            self.log("The BMC's warning thresholds could not be read; protection follows the CPU and exhaust "
-                     "limits until they can (retried every 10 min)", "warn")
+            why = getattr(self.driver, "thresholds_error", "")
+            self.log(f"The BMC's warning thresholds could not be read{f' ({why})' if why else ''}; protection follows "
+                     "the CPU and exhaust limits until they can (retried every 10 min)", "warn")
         elif getattr(self.driver, "thresholds", None):
             self.told_thresholds = False
         return sensors

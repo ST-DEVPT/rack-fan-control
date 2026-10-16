@@ -3,6 +3,16 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.6.2] - 2026-10-16
+
+- **Dell: the BMC's warning thresholds are read again on servers that have one unreadable sensor** (an empty
+  CPU socket, a PSU). `ipmitool sensor` lists every sensor and then exits with an error over that one; the
+  whole list was thrown away and the log said the thresholds could not be read. When they really cannot be,
+  the log now says why.
+- **Errors say what happened**: when a reverse proxy answers instead of Fan Control (502, 503, 504), the
+  message says so instead of a JSON parse error, and a request that never got an answer shows an error
+  instead of nothing. Every button reports failures the same way.
+
 ## [2.6.1] - 2026-10-16
 
 - **Minimum speed goes down to 0 %** (it stopped at 10 %): fixed, curve and smart modes can run the fans as
