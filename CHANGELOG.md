@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.7.1] - 2026-10-16
+
+- **An alerts file with an empty section** (`"colors": null`, an event set to `null`), edited by hand, no
+  longer stops every alert and the control loop's checks; the defaults fill in.
+- **The dashboard's polling never stops for good** after one unexpected error, and the 24 h and 7 d charts
+  no longer show an error while the dashboard is offline (the banner already says so).
+- **Bursts of connections through a reverse proxy** wait in a deeper queue (64) instead of being refused.
+
 ## [2.7.0] - 2026-10-16
 
 - **Fan calibration**: one button under the fan list steps the fans from 100 % down to 0 %, measures each

@@ -15,6 +15,20 @@ class Config(unittest.TestCase):
                                            "events": {"hot": {"enabled": True, "title": "{server} hot {cpu}"}}},
                                           alerts.alert_config())
 
+    def test_null_sections_in_the_file_fall_back_to_the_defaults(self):
+        from fanctl.config import write_json
+        saved = alerts.ALERTS_FILE.read_text() if alerts.ALERTS_FILE.exists() else None
+        write_json(alerts.ALERTS_FILE, {"enabled": True, "colors": None, "events": {"hot": None}, "channels": None})
+        try:
+            cfg = alerts.alert_config()
+        finally:
+            if saved is None:
+                alerts.ALERTS_FILE.unlink()
+            else:
+                alerts.ALERTS_FILE.write_text(saved)
+        self.assertEqual(cfg["colors"], alerts.ALERT_DEFAULTS["colors"])
+        self.assertEqual(cfg["events"]["hot"], alerts.ALERT_DEFAULTS["events"]["hot"])
+
     def test_merge_and_public_view(self):
         self.assertEqual(alerts.webhook_of(self.cfg), HOOK)
         self.assertEqual(self.cfg["colors"]["warn"], "#abcdef")

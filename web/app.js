@@ -774,7 +774,7 @@ async function loadLong() {
 function renderChart() {
   if (!server) return;
   const isLong = range > 10800;
-  if (isLong) loadLong();  // cached; re-fetched every 5 minutes
+  if (isLong) loadLong().catch(() => {});  // cached, re-fetched every 5 minutes; offline, the banner says so
   const monitor = server.effective === "monitor" || !server.control, fanKey = monitor ? "fanpct" : "speed";
   const svg = $("#chart"), W = svg.clientWidth || 800, H = svg.clientHeight || 320;
   const pl = 36, pr = 40, pt = 10, pb = 26;
@@ -888,7 +888,7 @@ function every(ms, fn) {
   const tick = async () => {
     if (!document.hidden && !busy) {
       busy = true;
-      try { await fn(); } finally { busy = false; }
+      try { await fn(); } catch (e) { console.error(e); } finally { busy = false; }  // one failure never stops it
     }
     setTimeout(tick, ms);
   };

@@ -82,8 +82,9 @@ def alert_config():
     if not isinstance(saved, dict):
         saved = {}
     cfg = {**ALERT_DEFAULTS, **{k: v for k, v in saved.items() if k in ALERT_DEFAULTS}}
-    cfg["colors"] = {**ALERT_DEFAULTS["colors"], **saved.get("colors", {})}
-    cfg["events"] = {k: {**ALERT_DEFAULTS["events"][k], **saved.get("events", {}).get(k, {})} for k in ALERT_KINDS}
+    # a hand-edited file with null where a section was must not take every alert down with it
+    cfg["colors"] = {**ALERT_DEFAULTS["colors"], **(saved.get("colors") or {})}
+    cfg["events"] = {k: {**ALERT_DEFAULTS["events"][k], **((saved.get("events") or {}).get(k) or {})} for k in ALERT_KINDS}
     cfg["channels"] = {c: {**ALERT_DEFAULTS["channels"][c], **(saved.get("channels") or {}).get(c, {})} for c in CHANNELS}
     return cfg
 

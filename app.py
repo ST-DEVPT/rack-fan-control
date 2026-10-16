@@ -62,6 +62,7 @@ class BoundedServer(ThreadingHTTPServer):
     connections waits its turn instead of using up threads and memory."""
     MAX_REQUESTS = 64
     WAIT = 10  # seconds a request waits for a free slot
+    request_queue_size = 64  # connections the kernel holds before accept(); a proxy opens many at once
     daemon_threads = True
 
     def __init__(self, *a, **kw):
