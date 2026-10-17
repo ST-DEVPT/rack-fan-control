@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.4] - 2026-10-17
+
+- **Smart mode learns nothing while the BMC has the fans** (they do not follow): the speed it saw then is not
+  what held the target, and the learned map would have been wrong for good.
+- **A calibration starts by taking hold of the fans properly**, so it measures Fan Control's fans.
+- **Discord alerts rate-limited during an incident are sent again** after the wait Discord asks for (a
+  webhook takes 5 requests in 2 s; several servers going down at once went past that and lost alerts).
+
 ## [2.9.3] - 2026-10-17
 
 - **One failed BMC reading no longer hands the fans over and sends two alerts.** A busy iDRAC drops a reading

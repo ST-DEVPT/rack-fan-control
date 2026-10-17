@@ -490,6 +490,23 @@ class TakingBack(unittest.TestCase):
         self.assertFalse(srv.not_following)
         self.assertEqual(srv.events[0]["msg"], "The fans follow Fan Control again")
 
+    def test_smart_mode_learns_nothing_while_the_bmc_has_the_fans(self):
+        import fanctl.server as server_module
+        srv = self.server("tb-smart")
+        write_json(srv.settings_file, {"mode": "smart", "smart_target": 60})
+        srv.answers = [reading([("CPU 1", 60, True)])]
+        real = server_module.smart_step
+        server_module.smart_step = lambda memory, learned, *a: (learned.__setitem__(5, 30), (30, {"reason": "smart"}))[1]
+        try:
+            srv.not_following = True
+            srv.cycle()
+            self.assertEqual(srv.learned, {})                            # what it learned went nowhere
+            srv.not_following = False
+            srv.cycle()
+            self.assertEqual(srv.learned, {5: 30})                       # and does once they follow
+        finally:
+            server_module.smart_step = real
+
     def test_the_calibration_is_what_a_speed_should_give(self):
         srv = self.server("tb-cal")
         srv.calib = {"status": "done", "results": [{"pct": 40, "rpm": 6000}, {"pct": 20, "rpm": 4000}]}

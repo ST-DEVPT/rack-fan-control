@@ -309,13 +309,27 @@ def send_channel(cfg, channel, kind, values, prefix=""):
         r.read(65536)
 
 
-def post_webhook(url, payload, method="POST"):
-    """Send to Discord and return the message it created or edited (wait=true)."""
+def post_webhook(url, payload, method="POST", attempts=3):
+    """Send to Discord and return the message it created or edited (wait=true). Discord allows a webhook
+    5 requests in 2 s: when several servers go down at once (a power cut), the alerts past that come
+    back 429, and are sent again after the wait it asks for instead of being lost. Runs in the alert's
+    own thread, so the wait holds up nothing else."""
     req = urllib.request.Request(url + ("&" if "?" in url else "?") + "wait=true", data=json.dumps(payload).encode(),
                                  method=method, headers={"Content-Type": "application/json",
                                                          "User-Agent": f"fan-control/{VERSION}"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read() or b"{}")
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == attempts - 1:
+                raise
+            try:
+                wait = float(e.headers.get("Retry-After") or 2)
+            except ValueError:
+                wait = 2
+            time.sleep(min(10.0, max(0.5, wait)))
+    return {}
 
 
 # ---------------------------------------------------------------- status reports

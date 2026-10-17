@@ -153,3 +153,35 @@ class Reports(unittest.TestCase):
             alerts.post_webhook = real
             alerts.save_alerts(alerts.validate_alerts({"webhook_url": "", "events": {"report": {"enabled": False}}},
                                                       alerts.alert_config()))
+
+
+class RateLimit(unittest.TestCase):
+    def test_a_rate_limited_alert_is_sent_again(self):
+        import io
+        calls = []
+
+        class Answer(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {"Retry-After": "0.5"}, None)
+            return Answer(b'{"id": "1"}')
+
+        real = alerts.urllib.request.urlopen
+        alerts.urllib.request.urlopen = fake_urlopen
+        try:
+            self.assertEqual(alerts.post_webhook(HOOK, {"content": "x"}), {"id": "1"})
+            self.assertEqual(len(calls), 2)
+            calls.clear()
+            alerts.urllib.request.urlopen = lambda req, timeout: (_ for _ in ()).throw(
+                urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None))
+            with self.assertRaises(urllib.error.HTTPError):  # anything else is not retried
+                alerts.post_webhook(HOOK, {"content": "x"})
+        finally:
+            alerts.urllib.request.urlopen = real

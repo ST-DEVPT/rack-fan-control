@@ -266,6 +266,7 @@ class Server:
                           "steps": [p for p in self.CALIB_STEPS if p >= floor], "i": 0, "since": now,
                           "samples": [], "results": [], "reason": "", "floor": None, "suggested": None}
             self.smart = {}
+            self.retakes = [now]  # measured fans must be Fan Control's: take hold properly first
             minutes = round(len(self.calib["steps"]) * (self.CALIB_SETTLE + self.CALIB_SAMPLES * self.CALIB_EVERY) / 60)
         self.log(f"Fan calibration started{' by ' + who if who else ''}: about {minutes} min")
         self.wake.set()
@@ -433,7 +434,9 @@ class Server:
         else:
             if effective == "manual" and settings["mode"] == "smart":
                 with self.lock:  # forget_learned() clears the map from the HTTP thread
-                    target, smart = smart_step(self.smart, self.learned, settings, cpu, sensors, now, cap)
+                    # while the BMC has the fans, what held the target was not this speed: learn nothing
+                    learned = dict(self.learned) if self.not_following else self.learned
+                    target, smart = smart_step(self.smart, learned, settings, cpu, sensors, now, cap)
                 smart["reason"] = smart["reason"].replace(", quiet hours cap", f", {cap_name} cap")
                 reason = smart["reason"]
                 if target is None:
