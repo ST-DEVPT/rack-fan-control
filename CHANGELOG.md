@@ -3,6 +3,26 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.2] - 2026-10-17
+
+From a review of every way the BMC's real state can drift from what Fan Control believes (the family of #3):
+
+- **Every take-over takes hold properly**, not only the start and a host power-on: the end of a failsafe, a
+  hand-over or a dry run, a change from automatic and a refused command all let go and take hold again. A
+  warm reboot of the host (no power-off, but a POST) shows up as one of those, or as fans not following.
+- **iLO 4 unlocked re-sends its caps and Supermicro its Full mode at every take-over**, instead of up to 10
+  minutes later: a restarted iLO forgets the caps, a Supermicro back from a power cycle its mode.
+- **A power state the BMC cannot tell** ("Chassis Power is unknown" while it is busy) keeps the last one
+  known, instead of counting as off: that handed the fans over and faked a power-on.
+- **An empty fan bay no longer trips the failsafe for good**: a fan at 0 RPM that has not turned since Fan
+  Control started is logged as an empty bay. One that turned and stops, or that the BMC reports as failed,
+  still trips it.
+- **The first command after a start no longer waits for the BMC's thresholds** (`ipmitool sensor` can take a
+  minute, and a crash may have left the fans low); they are read with the second reading.
+- **The overview flags fans that do not follow**, like a failsafe.
+- **Quiet hours and the schedule say when the container's clock is not the browser's**, with the fix (`TZ`).
+- Troubleshooting: what to do when the fans do not follow (two controllers fight), empty bays, the clock.
+
 ## [2.9.1] - 2026-10-17
 
 - **Fans the BMC took back are noticed and taken again** ([#3](https://github.com/ST-DEVPT/rack-fan-control/issues/3)).

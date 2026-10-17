@@ -252,11 +252,51 @@ class FailSafe(unittest.TestCase):
         fan = Scripted("fs-fan")
         dead = [{"name": "Fan1", "rpm": 0, "pct": None, "ok": True}] + [
             {"name": f"Fan{i}", "rpm": 4000, "pct": None, "ok": True} for i in (2, 3)]
-        fan.answers = [reading(self.OK, dead)]
+        fan.answers = [reading(self.OK), reading(self.OK, dead)]   # Fan1 turned, then stopped
+        fan.cycle()
         fan.cycle()
         fan.cycle()                                   # two readings to count as failed
         fan.cycle()
         self.assertEqual((fan.state["reason"], fan.calls[-1]), ("fan Fan1 failed", "auto"))
+
+    def test_a_bay_that_never_turned_is_not_a_failed_fan(self):
+        srv = Scripted("fs-bay")
+        empty = [{"name": "Fan6", "rpm": 0, "pct": None, "ok": True}] + [
+            {"name": f"Fan{i}", "rpm": 4000, "pct": None, "ok": True} for i in (1, 2)]
+        srv.answers = [reading(self.OK, empty)]
+        for _ in range(3):
+            srv.cycle()
+        self.assertFalse(srv.state["failsafe"])
+        self.assertEqual(srv.calls[-1], 30)
+        self.assertIn("taken as an empty bay", " ".join(e["msg"] for e in srv.events))
+        broken = [dict(empty[0], ok=False)] + empty[1:]              # unless the BMC itself says it failed
+        srv.answers = [reading(self.OK, broken)]
+        srv.cycle()
+        srv.cycle()
+        srv.cycle()
+        self.assertTrue(srv.state["failsafe"])
+
+    def test_a_power_state_the_bmc_cannot_tell_is_the_last_one_known(self):
+        srv = Scripted("fs-power")
+        srv.driver.retake = lambda pct: srv.calls.append(("retake", pct))
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.answers = [reading(self.OK, power=None)]                # "Chassis Power is unknown"
+        srv.cycle()
+        self.assertEqual((srv.state["power"], srv.calls[-1]), ("on", 30))  # not off, not a power-on
+
+    def test_every_take_over_lets_go_and_takes_hold_again(self):
+        srv = Scripted("fs-take")
+        srv.driver.retake = lambda pct: srv.calls.append(("retake", pct))
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.cycle()
+        srv.answers = [reading([("CPU 1", 80, True)])]
+        srv.cycle()                                                  # failsafe: the BMC has them
+        srv.answers = [reading(self.OK)]
+        srv.failsafe_since -= 301
+        srv.cycle()                                                  # back: taken again, not just told
+        self.assertEqual(srv.calls, [("retake", 30), 30, "auto", ("retake", 50)])
 
     def test_failsafe_holds_then_eases_down(self):
         srv = Scripted("fs-hold", {"mode": "fixed", "fixed_speed": 30, "ramp_down_seconds": 60})

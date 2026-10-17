@@ -269,9 +269,11 @@ Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` eve
 the same time; the example compose file gives it 60 s (`stop_grace_period`), where Docker's default is 10 s.
 
 **If the BMC takes the fans back.** Some BMCs return to their own control without a word: an iDRAC 7 did
-while its host started, and then ignored the manual-mode command sent every cycle. So Fan Control lets go
-and takes hold again (and, on Dell, looks for the fans afresh) when it starts, when the host powers on and
-twice more while it starts up, and when the BMC answers again after a silence. And it checks, at a steady
+while its host started, and then ignored the manual-mode command sent every cycle. So every time Fan
+Control takes the fans (when it starts, after a failsafe, a hand-over, a dry run or a refused command, on a
+change from automatic) it lets go and takes hold again: on Dell also looking for the fans afresh, on
+Supermicro switching to Full mode again, on iLO 4 re-sending the caps. It does the same when the host
+powers on and twice more while it starts up, and when the BMC answers again after a silence. And it checks, at a steady
 speed, that the fans turn as fast as that speed made them turn before (the calibration's measurements, or
 what it saw itself): when they do not, the page and the event log say so, the *fan commands ignored* alert
 goes out, `fanctl_fans_following` drops to 0, and it takes them back every 5 minutes until they follow. The
@@ -507,6 +509,10 @@ Use **Test connection** (Edit on the server's page) to see the BMC's answer with
 | `SSH: ... (is the iLO firmware unlocked?)` | The iLO answered, but does not have the `fan` command: stock firmware |
 | `... near its N°C warning threshold` | A sensor other than the CPU is hot; see the Temperatures table, where each bar marks its threshold |
 | `ERROR: cannot write to /data` (container log) | The data folder is not owned by uid 1000 |
+| `Fans at N RPM where X% gave M RPM before: the BMC seems to have taken them back` | The BMC runs the fans on its own although it accepts the commands. Fan Control takes them back every 5 minutes. If it lasts: is anything else sending fan commands to this BMC (a second Fan Control, a script in cron, OpenManage, an iDRAC thermal profile set by hand)? Two controllers fight. Otherwise, attach the Diagnostics file to an issue |
+| `Fan N reads 0 and has not turned since Fan Control started: taken as an empty bay` | Some BMCs list empty fan bays at 0 RPM. A fan that turned and then stops, or one the BMC reports as failed, still trips the failsafe |
+| Quiet hours or the schedule at the wrong time | They follow the container's clock: set `TZ` in the compose file. The panel says so when the container's time zone is not the browser's |
+| `The iDRAC refused the all-fans command; fans ... are set one by one` | An 11th-generation iDRAC, or one still starting with its host. Fan Control tries all fans again whenever it takes the fans back |
 
 ## Upgrading
 

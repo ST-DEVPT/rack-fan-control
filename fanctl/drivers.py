@@ -289,8 +289,13 @@ class IPMIDriver(Driver):
                 out["ipmitool " + " ".join(args)] = f"error: {e}"
         return out
 
+    reads = 0
+
     def read(self):
-        if self.thresholds is None or (not self.thresholds and time.time() - self.thresholds_at > 600):
+        self.reads += 1
+        # `ipmitool sensor` can take a minute: the first reading goes straight to the fans (which a crash
+        # may have left low), and the thresholds come with the second
+        if self.reads > 1 and (self.thresholds is None or (not self.thresholds and time.time() - self.thresholds_at > 600)):
             self.thresholds_at = time.time()
             try:
                 # iDRACs list every sensor, then exit 1 over one they cannot read (an empty CPU socket's,
@@ -301,7 +306,9 @@ class IPMIDriver(Driver):
             except DriverError as e:
                 self.thresholds, self.thresholds_error = {}, str(e)
         data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds, self.fan_floors)
-        data["power"] = "on" if "is on" in self.ipmi("chassis", "power", "status") else "off"
+        status = self.ipmi("chassis", "power", "status")
+        # "unknown" while the BMC is busy is not "off": that would hand the fans over and fake a power-on
+        data["power"] = "on" if "is on" in status else "off" if "is off" in status else None
         if self.model is None:
             try:
                 fru = self.ipmi("fru", "print", "0")
@@ -420,6 +427,10 @@ class SupermicroDriver(IPMIDriver):
                 json.dump({"mode": self.original}, f)
         except OSError:
             pass
+
+    def retake(self, pct):
+        self.full_since = None  # Full mode again now, not at the next 10-minute re-assertion
+        self.set_speed(pct)
 
     def set_auto(self):
         self.full_since = None
@@ -673,6 +684,10 @@ class ILO4UnlockedDriver(RedfishDriver):
     def set_auto(self):
         self.sent = None
         self.caps(255)  # no cap: the iLO decides. A failure raises: a low cap left behind must be heard of
+
+    def retake(self, pct):
+        self.sent = None  # an iLO that restarted forgot the caps: send them now, not at the next re-send
+        self.set_speed(pct)
 
 
 # ---------------------------------------------------------------- demo

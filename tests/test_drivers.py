@@ -152,6 +152,8 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
         try:
             d = drivers.DellDriver("10.0.0.9", "root", "calvin")
             d.model = ""
+            d.read()
+            self.assertIsNone(d.thresholds)  # the first reading goes straight to the fans
             s = d.read()
         finally:
             drivers.subprocess.run = real
@@ -173,6 +175,11 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
 
 
 class Dell(unittest.TestCase):
+    def test_unknown_power_state(self):
+        d = FakeDell()
+        d.answer = lambda args: "Chassis Power is unknown" if args[:2] == ("chassis", "power") else SDR
+        self.assertIsNone(d.read()["power"])
+
     def test_retake_lets_go_then_takes_hold_with_all_fans(self):
         d = FakeDell()
         d.set_speed(30)

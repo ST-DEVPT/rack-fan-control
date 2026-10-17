@@ -224,7 +224,8 @@ def get_state(h):
         body = {**srv.state, **srv.info(), "interval": INTERVAL, "auth": bool(config.WEB_PASSWORD),
                 "version": VERSION, "settings": settings, "history": list(srv.history), "events": list(srv.events),
                 "calibration": json.loads(json.dumps(srv.calib)),  # a copy: the loop changes it in place
-                "handed_until": srv.handed_until}
+                "handed_until": srv.handed_until,
+                "clock": {"time": time.strftime("%H:%M"), "offset": time.strftime("%z")}}
     return h.send(200, body)
 
 

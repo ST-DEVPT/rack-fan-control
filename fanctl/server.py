@@ -55,6 +55,8 @@ class Server:
         self.failsafe_told = False
         self.fan_strikes = {}  # fan name -> readings in a row it looked failed
         self.fans_failed = set()
+        self.spun = set()          # fans seen turning since the start: only those can fail (see check_fans)
+        self.idle_told = set()
         self.last_manual = None  # (speed, rpm) of the previous cycle, for the command check
         self.probe = None        # a speed change whose effect on the RPM is being checked
         self.ignored = False     # the BMC did not follow the last checked change
@@ -64,7 +66,7 @@ class Server:
         self.blind_tried = 0       # last attempt to hand the fans back while the BMC could not be read
         self.told_thresholds = False
         self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
-        self.retakes = [0]         # times to take the fans back from the BMC (see command); at once on start
+        self.retakes = []          # times to take the fans back from the BMC again (see command)
         self.retook = 0
         self.rpm_at = {}           # speed -> RPM seen while the fans followed (see check_follow)
         self.follow_speed, self.follow_since, self.follow_strikes = None, 0, 0
@@ -404,7 +406,7 @@ class Server:
         sensors = self.read_sensors(now, dry)
         if sensors is None:
             return
-        power = sensors.pop("power")
+        power = sensors.pop("power") or self.state["power"]  # not known this time: as it was
         if power == "on" and self.state["power"] == "off":
             # a starting host can hand the fans back to the BMC, more than once (seen on iDRAC 7): take
             # them back now, and again when the start-up is likely over
@@ -570,11 +572,16 @@ class Server:
                         self.log(f"Could not hand the fans to the BMC for the dry run: {e}", "error")
                     self.dry_released = True
             elif self.control:
+                # Taking the fans from the BMC, whatever had them: the start, the end of a failsafe, a
+                # hand-over or a dry run, a mode change from automatic, a refused command. Every one of
+                # these lets go and takes hold again (driver.retake), since an iDRAC can ignore the bare
+                # manual-mode command (issue #3); so do the times scheduled after a host power-on.
+                taking = self.dry_released or self.state["effective"] != "manual"
                 self.dry_released = False
                 try:
                     if effective == "auto":
                         self.driver.set_auto()
-                    elif self.retakes and time.time() >= self.retakes[0]:
+                    elif taking or (self.retakes and time.time() >= self.retakes[0]):
                         self.retakes = [t for t in self.retakes if t > time.time()]
                         self.retook = time.time()
                         self.driver.retake(speed)
@@ -742,7 +749,15 @@ class Server:
     def check_fans(self, fans, vals):
         """A fan that stops while the others spin. Two readings in a row, so one odd value is ignored.
         Called with self.lock held."""
-        now_failed = set(failed_fans(fans))
+        self.spun |= {f["name"] for f in fans if (f["rpm"] or 0) >= 300 or (f["pct"] or 0) > 0}
+        # A fan at 0 that has not turned since the start is an empty bay or a blank, which some BMCs list:
+        # never a failsafe for good. One the BMC itself reports as failed still counts.
+        flagged = {f["name"] for f in fans if f.get("ok", True) is False}
+        stopped = set(failed_fans(fans))
+        now_failed = {n for n in stopped if n in self.spun or n in flagged}
+        for name in sorted(stopped - now_failed - self.idle_told):
+            self.idle_told.add(name)
+            self.log(f"Fan {name} reads 0 and has not turned since Fan Control started: taken as an empty bay", "warn")
         self.fan_strikes = {n: self.fan_strikes.get(n, 0) + 1 for n in now_failed}
         for f in fans:
             if self.fan_strikes.get(f["name"], 0) >= 2 and f["name"] not in self.fans_failed:
@@ -848,7 +863,7 @@ class Server:
         return {**self.info(), "model": s["model"], "cpu_temp": s["cpu_temp"], "effective": s["effective"],
                 "mode": settings["mode"], "failsafe_temp": settings["failsafe_temp"],
                 "applied_speed": s["applied_speed"], "failsafe": s["failsafe"], "error": s["error"],
-                "dry_run": s["dry_run"], "reason": s["reason"],
+                "dry_run": s["dry_run"], "reason": s["reason"], "following": s.get("following"),
                 "power": s["power"], "updated": s["updated"],
                 "watts": (s["sensors"] or {}).get("watts"), "inlet": (s["sensors"] or {}).get("inlet"),
                 "fan_pct": fan_avg(fans, "pct"), "fan_rpm": fan_avg(fans, "rpm"),

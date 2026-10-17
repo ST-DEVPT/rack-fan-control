@@ -35,6 +35,7 @@ function status(x) {
   if (x.error) return { cls: "bad", text: "Unreachable" };
   if (!x.updated) return { cls: "", text: "Connecting…" };
   if (x.failsafe) return { cls: "warn", text: "Failsafe · automatic" };
+  if (x.following === false) return { cls: "warn", text: "Fans not following" };
   if (x.effective === "monitor") return { cls: "ok", text: "Monitoring" };
   if (x.effective === "auto") return { cls: "ok", text: "Automatic" };
   return { cls: x.dry_run ? "warn" : "ok", text: `${x.dry_run ? "Dry run · " : ""}${cap(x.mode)} · ${x.applied_speed}%` };
@@ -156,7 +157,7 @@ function renderOverview() {
   }
   const temps = list.map(x => x.cpu_temp).filter(v => v != null);
   const watts = list.map(x => x.watts).filter(v => v != null);
-  const issues = list.filter(x => x.error || x.failsafe).length;
+  const issues = list.filter(x => x.error || x.failsafe || x.following === false).length;
   $("#ov-lede").textContent = [
     `${list.length} server${list.length > 1 ? "s" : ""}`,
     temps.length ? `hottest CPU ${fmt(tv(Math.max(...temps)))} ${tu()}` : "",
@@ -172,7 +173,7 @@ function card(x) {
   const fans = x.effective === "manual" ? `${x.applied_speed}%` : x.fan_pct != null ? `${x.fan_pct}%` :
     x.fan_rpm != null ? `${(x.fan_rpm / 1000).toFixed(1)}k rpm` : "—";
   const badge = x.control ? (x.experimental ? "Fan control · experimental" : "Fan control") : "Monitoring";
-  return `<a class="card${x.error ? " is-bad" : x.failsafe ? " is-warn" : ""}" href="#/server/${encodeURIComponent(x.id)}">
+  return `<a class="card${x.error ? " is-bad" : x.failsafe || x.following === false ? " is-warn" : ""}" href="#/server/${encodeURIComponent(x.id)}">
     <div class="card-top"><span class="dot ${st.cls}"></span><b>${esc(x.name)}</b><span class="vendor">${esc(x.vendor)}</span></div>
     <div class="card-sub">${esc(x.model || x.driver_label)}${x.host ? " · " + esc(x.host) : ""}</div>
     <div class="card-main">
@@ -350,6 +351,12 @@ function renderControls() {
   if (document.activeElement !== $("#failsafe")) $("#failsafe").value = Math.round(tv(draft.failsafe_temp));
   if (document.activeElement !== $("#ramp")) $("#ramp").value = draft.ramp_down_seconds;
   if (document.activeElement !== $("#min-speed")) $("#min-speed").value = draft.min_speed;
+  // quiet hours and the schedule run on the server's clock: say so when it is not the browser's
+  const off = server?.clock?.offset, mine = -new Date().getTimezoneOffset();
+  const theirs = off && (off[0] === "-" ? -1 : 1) * (+off.slice(1, 3) * 60 + +off.slice(3, 5));
+  $("#clock-warn").hidden = theirs == null || theirs === mine;
+  if (theirs != null && theirs !== mine)
+    $("#clock-warn").textContent = `These follow the server's clock, now ${server.clock.time} (UTC${off.slice(0, 3)}:${off.slice(3)}). Set TZ in the compose file if that is not your time.`;
   const warn = minSpeedWarning();
   $("#min-warn").hidden = !warn;
   $("#min-warn").textContent = warn;
