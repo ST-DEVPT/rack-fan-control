@@ -3,6 +3,23 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.8] - 2026-10-17
+
+Operations, from an independent review:
+
+- **fan-guard.sh**:
+  - reads the compose file's `SERVER_1_...` servers (it only knew `GUARD_SERVERS` and the 1.x `IDRAC_HOST`,
+    so a current setup was guarded by nothing, in silence), and fails with a message when it has none;
+  - reads the `.env` as `KEY=value` lines instead of running it as shell code as root (a password with a
+    space or a `;` ran as a command), and refuses one the group or others can write (0646 passed);
+  - times Docker out after 15 s and runs one at a time, so a hung dockerd no longer stacks stuck guards;
+  - acts on a running but *unhealthy* container only after 5 minutes (a slow health check is not a dead loop).
+- **The example compose file** adds `init: true` (no zombie ssh processes) and log rotation, and Fan Control
+  logs an error while the password is still the example's `change-me`.
+- **Backups carry the fan calibrations**, and an import without passwords says how to finish it.
+- CI checks that `docker stop` really handed the fans back, and the browser tests open the Automation page.
+- README: the `/data` table lists every file; the watchdog's real timing.
+
 ## [2.9.7] - 2026-10-17
 
 Control quality, from an independent review with simulations:

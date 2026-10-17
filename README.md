@@ -192,6 +192,10 @@ The 1.x variables still work and keep their settings: `IDRAC_HOST`, `IDRAC_USERN
 | `history-<server>.json` | Three hours of readings, seven days of 5-minute averages, and the events |
 | `alerts.json` | Alert settings, including the Discord webhook and the ntfy, Gotify and webhook addresses and tokens (file mode 600, never sent to the browser) |
 | `smart-<server>.json` | What smart mode learned: the fan speed each heat load needs |
+| `sessions.json` | Sign-in sessions that were signed out before they expired (file mode 600) |
+| `redfish-pins.json` | The certificate each Redfish BMC showed first (trust on first use) |
+| `supermicro-<host>.json` | The fan mode a Supermicro BMC had before Fan Control, given back on release |
+| `*.corrupt-<time>` | A file that could not be read, kept aside for a look |
 | `calibration-<server>.json` | The last fan calibration: RPM and power draw at each speed |
 | `handover-<server>.json` | Until when the fans are handed to the BMC, while they are |
 | `changes-<server>.json` | The last 20 settings saved, with who saved them and when |
@@ -285,7 +289,8 @@ last manual speed until it is told otherwise. The page and the *BMC unreachable*
 the minimum speed one the server can live with for a while, and the BMC on a network path that does not
 fail with the one to the host. One failed reading is not enough (a busy BMC drops some): two in a row are.
 
-**If the controller itself stops.** A control loop that stops turning for 3 minutes trips a watchdog:
+**If the controller itself stops.** A control loop that stops turning for 3 minutes (or 10 intervals,
+when longer) trips a watchdog:
 every fan goes back to its BMC and the process exits, so Docker's restart policy (`restart:
 unless-stopped`) starts a fresh one. The image's health check reads `/livez`, which follows the control
 loops and not the BMCs. What no process can cover is its own sudden death (`kill -9`, out of memory,
@@ -299,10 +304,14 @@ unlocked over SSH. A container that was removed on purpose is left alone.
 * * * * * /root/docker/fan-guard.sh >> /var/log/fan-guard.log 2>&1
 ```
 
-It reads the servers from the `.env` next to it (`chmod 600`; it refuses one others can write):
-`GUARD_SERVERS="R420 X11"`, then `R420_HOST`, `R420_USERNAME`, `R420_PASSWORD` and `R420_DRIVER`
-(`dell`, `supermicro` or `ilo4-unlocked`) for each. A single Dell server only needs the `IDRAC_HOST`,
-`IDRAC_USERNAME` and `IDRAC_PASSWORD` the compose file already uses.
+It reads the servers from the `.env` next to it (`chmod 600`; it refuses one the group or others can
+write), as plain `KEY=value` lines, never as shell code: the `SERVER_1_HOST`, `SERVER_1_USERNAME`,
+`SERVER_1_PASSWORD`, `SERVER_1_DRIVER`... of the compose file, the 1.x `IDRAC_HOST`..., or names of your
+own: `GUARD_SERVERS="R420 X11"`, then `R420_HOST`, `R420_USERNAME`, `R420_PASSWORD` and `R420_DRIVER`
+(`dell`, `supermicro` or `ilo4-unlocked`). **Servers added only in the dashboard must be listed there too**:
+with no server at all the guard logs it and fails, rather than guarding nothing in silence. Docker calls
+time out after 15 s, one run at a time, and a container that is running but *unhealthy* (a slow health
+check) is only acted on after 5 minutes.
 
 **Dry run** decides and logs what it would send ("Dry run: would set fans to 25%"), but leaves the fans
 to the BMC. Use it to try a new server type or a new curve.
@@ -495,10 +504,11 @@ Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
 
 ## Backup
 
-The **Backup** page downloads the servers added in the dashboard, every server's fan settings and the
-Discord configuration as one JSON file, and imports such a file on this or another machine. Passwords and
-the webhook are included only when you tick the box; a backup without them restores the settings, but
-servers have to be added again with their passwords.
+The **Backup** page downloads the servers added in the dashboard, every server's fan settings, the alerts,
+what smart mode learned and the fan calibrations as one JSON file, and imports such a file on this or
+another machine. Passwords and the webhook are included only when you tick the box. Without them, servers
+added in the dashboard cannot be created on import: add them again with the same names, then import the
+same file once more for their settings, map and calibration (the import report says so).
 
 ## Troubleshooting
 
