@@ -212,6 +212,14 @@ class Driver:
     def set_pcie(self, enabled):
         raise DriverError("not supported")
 
+    exact_speed = False  # set_speed() sets the duty itself (not a cap), so a speed always gives the same RPM
+    notice = None        # something the driver decided that the event log should show, taken once by the server
+
+    def retake(self, pct):
+        """Take the fans back from a BMC that may have gone back to its own control: after the host
+        powers on, after the BMC was unreachable, and when the fans stop following."""
+        self.set_speed(pct)
+
     def sel(self):
         """The BMC's System Event Log: {used_pct, entries, recent: [[id, date, time, sensor, event, direction], ...]},
         newest first."""
@@ -313,12 +321,23 @@ class DellDriver(IPMIDriver):
     pcie = True
     monitor_reason = ""
 
+    exact_speed = True
+
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.fan_ids = None  # None: the 0xff broadcast works; list: per-fan identifiers
 
     def set_auto(self):
         self.ipmi("raw", "0x30", "0x30", "0x01", "0x01")
+
+    def retake(self, pct):
+        # An iDRAC can take the fans back while the host starts and then ignore the manual-mode command
+        # sent every cycle (reported on an R420, iDRAC 7). Let go first, then take hold again; and look
+        # for the fans afresh, since one refused all-fans selector during start-up must not leave the
+        # fans set one by one, perhaps by the wrong identifiers, for good.
+        self.fan_ids = None
+        self.set_auto()
+        self.set_speed(pct)
 
     def set_speed(self, pct):
         self.ipmi("raw", "0x30", "0x30", "0x01", "0x00")
@@ -351,6 +370,8 @@ class DellDriver(IPMIDriver):
         if not ids:
             raise DriverError("the iDRAC refused every fan identifier (rsp=0xcc)")
         self.fan_ids = ids
+        self.notice = (f"The iDRAC refused the all-fans command; fans {', '.join(str(i) for i in ids)} are set one by one "
+                       "(tried again with all fans whenever control is taken back)")
 
     def set_pcie(self, enabled):
         self.ipmi("raw", "0x30", "0xce", "0x00", "0x16", "0x05", "0x00", "0x00", "0x00",
@@ -366,6 +387,7 @@ class SupermicroDriver(IPMIDriver):
     min_speed = 25  # below about this many fans read under their lower critical RPM and the BMC goes to full
     control = True
     experimental = True
+    exact_speed = True
     monitor_reason = ""
 
     REASSERT = 600  # switch to Full mode again every 10 min, in case the BMC was reset
@@ -663,6 +685,8 @@ class DemoDriver(Driver):
     control = True
     pcie = True
     needs_host = False
+
+    exact_speed = True
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)

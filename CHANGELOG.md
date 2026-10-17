@@ -3,6 +3,21 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.1] - 2026-10-17
+
+- **Fans the BMC took back are noticed and taken again** ([#3](https://github.com/ST-DEVPT/rack-fan-control/issues/3)).
+  An iDRAC 7 returned to its own control while its host started and then ignored the manual-mode command
+  sent every cycle, for 30 hours, with the dashboard showing nothing wrong. Now:
+  - control is taken back by letting go and taking hold again (on Dell, also looking for the fans afresh)
+    when Fan Control starts, when the host powers on and twice more during its start-up, and when the BMC
+    answers again after a silence;
+  - at a steady speed, the fans must turn as fast as that speed made them turn before (the calibration, or
+    what was seen while they followed). When they do not, the server page says so, the event log and the
+    *fan commands ignored* alert tell, and control is taken back every 5 minutes until they follow;
+  - `fanctl_fans_following` and a `FansNotFollowing` Prometheus rule;
+  - falling back to setting Dell fans one by one is logged, and retried with all fans at every take-back,
+    so a refusal during the host's start-up does not stick.
+
 ## [2.9.0] - 2026-10-16
 
 - **Earlier settings**: the last 20 settings saved for each server, with when, who and what changed; any can

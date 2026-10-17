@@ -268,6 +268,15 @@ When the controller hands a Supermicro back, the BMC gets the fan mode it had be
 Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` every server is released at
 the same time; the example compose file gives it 60 s (`stop_grace_period`), where Docker's default is 10 s.
 
+**If the BMC takes the fans back.** Some BMCs return to their own control without a word: an iDRAC 7 did
+while its host started, and then ignored the manual-mode command sent every cycle. So Fan Control lets go
+and takes hold again (and, on Dell, looks for the fans afresh) when it starts, when the host powers on and
+twice more while it starts up, and when the BMC answers again after a silence. And it checks, at a steady
+speed, that the fans turn as fast as that speed made them turn before (the calibration's measurements, or
+what it saw itself): when they do not, the page and the event log say so, the *fan commands ignored* alert
+goes out, `fanctl_fans_following` drops to 0, and it takes them back every 5 minutes until they follow. The
+BMC has them meanwhile, which is safe, so this is no failsafe.
+
 **If the controller itself stops.** A control loop that stops turning for 3 minutes trips a watchdog:
 every fan goes back to its BMC and the process exits, so Docker's restart policy (`restart:
 unless-stopped`) starts a fresh one. The image's health check reads `/livez`, which follows the control

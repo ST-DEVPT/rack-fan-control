@@ -232,7 +232,9 @@ function renderServer() {
   $("#mode-now").textContent = (s.dry_run ? "Dry run · " : "") +
     (monitor ? "Monitoring" : auto ? "Automatic" : `${cap(s.settings.mode)} · ${s.applied_speed} %`);
 
-  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(s.reason)}. The BMC is controlling the fans.`] : null;
+  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(s.reason)}. The BMC is controlling the fans.`]
+    : s.following === false ? ["Fans", "Their RPM does not match the speed set: the BMC seems to have taken them back. Fan Control keeps taking them again."]
+    : null;
   $("#alert").classList.toggle("show", !!alert);
   // written only when it changes: the box is a live region, read out again on every write
   if (alert && $("#alert-msg").dataset.en !== alert[1]) {

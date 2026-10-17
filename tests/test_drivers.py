@@ -173,6 +173,16 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
 
 
 class Dell(unittest.TestCase):
+    def test_retake_lets_go_then_takes_hold_with_all_fans(self):
+        d = FakeDell()
+        d.set_speed(30)
+        self.assertEqual(d.fan_ids, [0, 1, 2, 3])                     # fell back to fans one by one
+        self.assertIn("set one by one", d.notice)
+        d.sent.clear()
+        d.retake(30)
+        self.assertEqual(d.sent[:3], [("raw", "0x30", "0x30", "0x01", "0x01"), ("raw", "0x30", "0x30", "0x01", "0x00"),
+                                      ("raw", "0x30", "0x30", "0x02", "0xff", "0x1e")])  # auto, manual, all fans again
+
     def test_per_fan_fallback(self):
         d = FakeDell()
         d.set_speed(30)

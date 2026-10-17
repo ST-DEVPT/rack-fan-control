@@ -15,6 +15,7 @@ const METRICS = [
   ["fanctl_power_on", "1 if the server is on"],
   ["fanctl_bmc_control", "1 while the BMC's own fan control is active"],
   ["fanctl_failsafe_active", "1 while the failsafe holds"],
+  ["fanctl_fans_following", "0 when the fans do not turn as the speed set should make them"],
   ["fanctl_last_update_timestamp_seconds", "Time of the last reading"],
   ["fanctl_loop_last_tick_timestamp_seconds", "Time the control loop last turned"],
   ["fanctl_bmc_errors_total", "Failed BMC readings (counter)"],

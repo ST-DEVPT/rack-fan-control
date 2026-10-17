@@ -64,6 +64,11 @@ class Server:
         self.blind_tried = 0       # last attempt to hand the fans back while the BMC could not be read
         self.told_thresholds = False
         self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
+        self.retakes = [0]         # times to take the fans back from the BMC (see command); at once on start
+        self.retook = 0
+        self.rpm_at = {}           # speed -> RPM seen while the fans followed (see check_follow)
+        self.follow_speed, self.follow_since, self.follow_strikes = None, 0, 0
+        self.not_following, self.follow_ok_at = False, 0
         self.resume_until = 0      # easing out of a failsafe until then
         self.saved = time.time()
         self.bad_settings = None  # last validation error of the settings file, logged once
@@ -77,7 +82,7 @@ class Server:
         self.state = {"sensors": None, "cpu_temp": None, "effective": None, "applied_speed": None,
                       "target_speed": None, "reason": "", "failsafe": False, "error": None,
                       "updated": None, "power": None, "model": None, "dry_run": False, "smart": None,
-                      "smart_map": []}
+                      "smart_map": [], "following": None}
 
     @property
     def control(self):
@@ -142,11 +147,15 @@ class Server:
         self.history.extend(p for p in data.get("history", []) if p.get("t", 0) > cutoff)
         self.long.extend(p for p in data.get("long", []) if p.get("t", 0) > time.time() - LONG_SECONDS)
         self.events.extend(e for e in data.get("events", []) if isinstance(e, dict))
+        rpm_at = data.get("rpm_at")
+        if isinstance(rpm_at, dict):
+            self.rpm_at = {int(k): v for k, v in rpm_at.items() if str(k).isdigit() and type(v) in (int, float)}
         return bool(self.history)
 
     def save_history(self):
         with self.lock:
-            data = {"history": list(self.history), "long": list(self.long), "events": list(self.events)}
+            data = {"history": list(self.history), "long": list(self.long), "events": list(self.events),
+                    "rpm_at": dict(self.rpm_at)}
             learned = dict(self.learned)
         try:
             write_json(self.history_file, data)
@@ -396,6 +405,11 @@ class Server:
         if sensors is None:
             return
         power = sensors.pop("power")
+        if power == "on" and self.state["power"] == "off":
+            # a starting host can hand the fans back to the BMC, more than once (seen on iDRAC 7): take
+            # them back now, and again when the start-up is likely over
+            self.retakes = [now, now + 180, now + 480]
+            self.log("Host powered on: taking the fans back from the BMC while it starts")
 
         # only a CPU sensor counts as the CPU: standing in the inlet or a DIMM would run the fans on the
         # floor while the CPU cooks, so without one the BMC decides
@@ -560,6 +574,10 @@ class Server:
                 try:
                     if effective == "auto":
                         self.driver.set_auto()
+                    elif self.retakes and time.time() >= self.retakes[0]:
+                        self.retakes = [t for t in self.retakes if t > time.time()]
+                        self.retook = time.time()
+                        self.driver.retake(speed)
                     else:
                         self.driver.set_speed(speed)  # re-sent every cycle: a BMC reset silently returns to auto
                     self.counters["fan_commands"] += 1
@@ -576,6 +594,9 @@ class Server:
                 except DriverError as e:
                     self.log(f"Third-party PCIe cooling command refused: {e}", "error")
                 self.pcie_applied = pcie  # tried once per change, not every cycle
+        notice, self.driver.notice = self.driver.notice, None
+        if notice:
+            self.log(notice, "warn")
         return effective, speed, reason, error
 
     def report(self, settings, sensors, power, cpu, effective, target, speed, reason, failsafe, was_failsafe,
@@ -597,6 +618,7 @@ class Server:
             if prev["error"] and not error:
                 self.log("BMC responding again", "info")
                 notify(self, "recovered", **vals)
+                self.retakes = [now]  # a BMC that was reset or rebooted is back on its own control
             if error and error != prev["error"]:
                 self.log(error, "error")
                 notify(self, "refused", **vals)
@@ -611,9 +633,12 @@ class Server:
             if prev["effective"] == "manual" and not dry and not self.calibrating():
                 self.check_fan_floors(sensors["fans"], prev["applied_speed"])
             self.check_response(effective if not dry else "dry", speed, sensors["fans"], vals)
+            manual = prev["effective"] == "manual" and not prev["dry_run"] and not self.calibrating()
+            self.check_follow(prev["applied_speed"] if manual else None, sensors["fans"], now, vals)
+            following = False if self.not_following else True if now - self.follow_ok_at < 600 else None
             self.state.update(sensors=sensors, cpu_temp=cpu, effective=effective, applied_speed=speed,
                               target_speed=target, reason=reason, failsafe=failsafe, error=error,
-                              updated=now, power=power, dry_run=dry, smart=smart,
+                              updated=now, power=power, dry_run=dry, smart=smart, following=following,
                               smart_map=learned_curve(self.learned, settings, sensors["inlet"]))
             self.record({"t": round(now), "cpu": cpu, "speed": speed,
                          "inlet": sensors["inlet"], "exhaust": sensors["exhaust"],
@@ -646,6 +671,62 @@ class Server:
                 notify(self, "failsafe_long", **vals, minutes=f"{minutes:.0f}")
         else:
             self.failsafe_since, self.failsafe_told = None, False
+
+    FOLLOW_TOLERANCE = 0.25  # RPM this far from what the speed gave before: the fans are not following it
+    FOLLOW_AFTER = 4         # readings in a row before that is believed
+    FOLLOW_STEADY = 60       # s a speed must have held before its RPM is judged
+    RETAKE_EVERY = 300       # s between attempts to take the fans back while they do not follow
+
+    def expected_rpm(self, speed):
+        """What this speed made the fans turn before: the calibration's measurements, else what was seen
+        while they followed. Between two known speeds, in proportion; outside them, None."""
+        cal = [(r["pct"], r["rpm"]) for r in (self.calib or {}).get("results", []) if r.get("rpm")]
+        pts = sorted(cal) if len(cal) >= 2 else sorted(self.rpm_at.items())
+        gap = 100 if len(cal) >= 2 else 10  # a measured curve holds between its steps; odd points seen, only close by
+        if speed in dict(pts):
+            return dict(pts)[speed]
+        for (p0, r0), (p1, r1) in zip(pts, pts[1:], strict=False):
+            if p0 < speed < p1 and p1 - p0 <= gap:
+                return r0 + (r1 - r0) * (speed - p0) / (p1 - p0)
+        return None
+
+    def check_follow(self, speed, fans, now, vals):
+        """Fans that do not turn as fast as this speed made them turn before, at a steady speed: the BMC has
+        taken them back (some iDRACs do while the host starts) or ignores the commands sent every cycle.
+        Then the fans are taken back every RETAKE_EVERY seconds until they follow. The BMC has them in
+        the meantime, which is safe, so this is no failsafe. speed: the one the reading answers to, or
+        None. Called with self.lock held."""
+        rpm = fan_avg(fans, "rpm", whole=False)
+        if speed is None or not rpm or not self.driver.exact_speed:
+            self.follow_speed = None
+            return
+        if speed != self.follow_speed:
+            self.follow_speed, self.follow_since, self.follow_strikes = speed, now, 0
+            return
+        if now - self.follow_since < self.FOLLOW_STEADY:
+            return
+        expected = self.expected_rpm(speed)
+        if expected is None:
+            if not self.not_following:  # the first time at this speed: what it gives
+                self.rpm_at[speed] = round(rpm)
+            return
+        if abs(rpm - expected) <= expected * self.FOLLOW_TOLERANCE:
+            self.follow_strikes, self.follow_ok_at = 0, now
+            if speed in self.rpm_at:  # fans age; follow them slowly
+                self.rpm_at[speed] = round(0.9 * self.rpm_at[speed] + 0.1 * rpm)
+            if self.not_following:
+                self.not_following = False
+                self.log("The fans follow Fan Control again")
+                notify(self, "recovered", **vals)
+            return
+        self.follow_strikes += 1
+        if self.follow_strikes >= self.FOLLOW_AFTER and not self.not_following:
+            self.not_following = True
+            self.log(f"Fans at {rpm:.0f} RPM where {speed}% gave {expected:.0f} RPM before: the BMC seems to have "
+                     "taken them back; taking them again", "error")
+            notify(self, "ignored", **vals)
+        if self.not_following and now - self.retook >= self.RETAKE_EVERY and not self.retakes:
+            self.retakes = [now]
 
     def check_fan_floors(self, fans, speed):
         """A fan under its BMC minimum at the speed last sent: the BMC logs it, lights the amber LED and

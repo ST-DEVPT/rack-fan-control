@@ -380,6 +380,73 @@ class Calibration(unittest.TestCase):
         self.assertEqual((c["status"], c["reason"]), ("stopped", "Fan Control restarted"))
 
 
+class TakingBack(unittest.TestCase):
+    """Issue #3: an R420 (iDRAC 7) took the fans back while the host started and ignored the manual
+    mode re-sent every cycle; the fans stayed on the iDRAC's control for 30 hours unnoticed."""
+    OK = FailSafe.OK
+
+    def tearDown(self):
+        for f in DATA.glob("settings-tb-*.json"):
+            f.unlink()
+
+    def server(self, sid):
+        srv = Scripted(sid)
+        srv.FOLLOW_STEADY = 0  # no time passes in a test
+        srv.driver.retake = lambda pct: srv.calls.append(("retake", pct))
+        return srv
+
+    @staticmethod
+    def fans(rpm):
+        return [{"name": f"Fan{i}", "rpm": rpm, "pct": None, "ok": True} for i in (1, 2, 3)]
+
+    def test_taken_back_on_start_and_when_the_host_powers_on(self):
+        srv = self.server("tb-power")
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        self.assertEqual(srv.calls, [("retake", 30)])                   # on start, whatever the BMC did before
+        srv.cycle()
+        self.assertEqual(srv.calls[-1], 30)                              # then the usual command
+        srv.answers = [reading(self.OK, power="off")]
+        srv.cycle()
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        self.assertEqual(srv.calls[-2:], ["auto", ("retake", 30)])
+        self.assertIn("Host powered on", srv.events[1]["msg"] + srv.events[0]["msg"])
+        self.assertEqual(len(srv.retakes), 2)                            # and twice more while it starts
+        srv.retakes = [0, 0]
+        srv.cycle()
+        self.assertEqual((srv.calls[-1], srv.retakes), (("retake", 30), []))
+
+    def test_fans_that_stop_following_are_noticed_and_taken_back(self):
+        srv = self.server("tb-follow")
+        srv.answers = [reading(self.OK, self.fans(3000))]
+        for _ in range(4):
+            srv.cycle()
+        self.assertEqual((srv.rpm_at, srv.state["following"]), ({30: 3000}, True))
+        srv.answers = [reading(self.OK, self.fans(5200))]                # the iDRAC's own idle speed
+        for _ in range(srv.FOLLOW_AFTER):
+            srv.cycle()
+        self.assertTrue(srv.not_following)
+        self.assertFalse(srv.state["following"])
+        self.assertIn("the BMC seems to have taken them back", srv.events[0]["msg"])
+        self.assertEqual(srv.state["effective"], "manual")               # the BMC has them: safe, no failsafe
+        srv.retook = 0
+        srv.cycle()
+        srv.cycle()
+        self.assertEqual(srv.calls[-1], ("retake", 30))
+        srv.answers = [reading(self.OK, self.fans(3050))]
+        srv.cycle()
+        self.assertFalse(srv.not_following)
+        self.assertEqual(srv.events[0]["msg"], "The fans follow Fan Control again")
+
+    def test_the_calibration_is_what_a_speed_should_give(self):
+        srv = self.server("tb-cal")
+        srv.calib = {"status": "done", "results": [{"pct": 40, "rpm": 6000}, {"pct": 20, "rpm": 4000}]}
+        self.assertEqual((srv.expected_rpm(30), srv.expected_rpm(20), srv.expected_rpm(50)), (5000, 4000, None))
+        srv.calib, srv.rpm_at = None, {20: 4000, 30: 5000, 60: 9000}
+        self.assertEqual((srv.expected_rpm(25), srv.expected_rpm(45)), (4500, None))  # never across a wide gap
+
+
 class HandOver(unittest.TestCase):
     def tearDown(self):
         for f in list(DATA.glob("settings-ho-*.json")) + list(DATA.glob("handover-ho-*.json")):
