@@ -448,7 +448,7 @@ class HTTP(Base):
             srv.state["error"] = None
         real_thread, real_tick = srv.thread, srv.tick
         srv.thread = type("T", (), {"is_alive": lambda self: True})()
-        srv.tick = 0
+        srv.tick = time.monotonic() - 10_000
         try:
             st, _, data = self.req("GET", "/livez")
             self.assertEqual((st, json.loads(data)["stalled"]), (503, ["rack-a"]))

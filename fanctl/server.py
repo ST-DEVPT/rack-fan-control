@@ -56,6 +56,8 @@ class Server:
         self.fan_strikes = {}  # fan name -> readings in a row it looked failed
         self.fans_failed = set()
         self.spun = set()          # fans seen turning since the start: only those can fail (see check_fans)
+        self.fans_missing = {}     # fan that turned -> readings in a row it has been absent
+        self.last_bug = None       # the last controller error told, so a persistent one is told once
         self.idle_told = set()
         self.last_manual = None  # (speed, rpm) of the previous cycle, for the command check
         self.probe = None        # a speed change whose effect on the RPM is being checked
@@ -67,6 +69,7 @@ class Server:
         self.misses = 0            # readings failed in a row (see READ_MISSES)
         self.told_thresholds = False
         self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
+        self.floor_strikes = 0
         self.retakes = []          # times to take the fans back from the BMC again (see command)
         self.retook = 0
         self.rpm_at = {}           # speed -> RPM seen while the fans followed (see check_follow)
@@ -78,7 +81,7 @@ class Server:
         self.pcie_applied = None
         self.dry_released = False
         self.thread = None
-        self.tick = time.time()  # last turn of the control loop, for the watchdog
+        self.tick = time.monotonic()  # last turn of the control loop, for the watchdog (NTP never moves it)
         # since the process started, for Prometheus counters
         self.counters = {"bmc_errors": 0, "fan_commands": 0, "fan_commands_refused": 0, "failsafe_trips": 0}
         self.cmd_lock = threading.Lock()  # fan commands vs. release(): never both at once
@@ -123,6 +126,8 @@ class Server:
     CHANGES_KEPT = 20  # settings versions kept per server
 
     def save_settings(self, s, who=""):
+        if s["min_speed"] != self.settings()["min_speed"]:
+            self.rpm_floor = 0  # a new minimum speed is judged afresh against the fans' BMC minimum
         write_json(self.settings_file, s)
         rows = self.changes()
         rows.append({"t": round(time.time()), "who": who, "settings": s})
@@ -298,7 +303,9 @@ class Server:
                 self.finish_calibration("done" if c["results"] else "stopped",
                                         f"{under} went under its BMC minimum of {floors[under]:.0f} RPM")
                 return None
-            if now - c["since"] >= self.CALIB_SETTLE:
+            if self.state["effective"] != "manual":  # the BMC had them (a dropped reading, a refusal): settle again
+                c["since"], c["samples"] = now, []
+            elif now - c["since"] >= self.CALIB_SETTLE:
                 c["samples"].append({"rpm": rpms, "watts": sensors["watts"]})
                 if len(c["samples"]) >= self.CALIB_SAMPLES:
                     seen = [s["rpm"] for s in c["samples"]]
@@ -408,6 +415,7 @@ class Server:
                             default=(None, None))
         dry = self.control and settings["dry_run"]
         sensors = self.read_sensors(now, dry)
+        self.tick = time.monotonic()  # a slow BMC (90 s for its thresholds) is not a stalled loop
         if sensors is None:
             return
         power = sensors.pop("power") or self.state["power"]  # not known this time: as it was
@@ -502,7 +510,10 @@ class Server:
         else:
             self.missing = {n: self.missing.get(n, 0) + 1 for n in self.known_temps - present}
         self.known_temps |= present
+        fans = {f["name"] for f in sensors["fans"]}
+        self.fans_missing = {} if power == "off" else {n: self.fans_missing.get(n, 0) + 1 for n in self.spun - fans}
         out = [f"{n} stopped reporting" for n, c in sorted(self.missing.items()) if c >= self.MISSING_AFTER]
+        out += [f"fan {n} stopped reporting" for n, c in sorted(self.fans_missing.items()) if c >= self.MISSING_AFTER]
         out += [f"{t['name']} reports a fault" for t in sensors["temps"] if t.get("ok") is False]
         out += [f"fan {n} failed" for n in sorted(self.fans_failed)]
         if self.ignored:
@@ -552,9 +563,11 @@ class Server:
         if cap is not None and not smart and speed > cap:
             speed = max(cap, settings["min_speed"])
             reason += f", {cap_name} cap {speed}%"
-        if smart and now < self.resume_until and speed < self.RESUME_SPEED:
+        if now < self.resume_until and speed < self.RESUME_SPEED:
+            # out of a failsafe, louder beats another trip: quiet hours and profiles wait, in every mode
             speed = self.RESUME_SPEED
-            self.smart["last"] = float(speed)  # smart mode eases down from here at its own pace
+            if smart:
+                self.smart["last"] = float(speed)  # smart mode eases down from here at its own pace
             reason += ", easing out of the failsafe"
         floor = getattr(self.driver, "min_speed", 0)
         if speed < floor:  # below this some BMCs see a stalled fan and go to full speed
@@ -577,9 +590,9 @@ class Server:
                 if not self.dry_released:
                     try:
                         self.driver.set_auto()
+                        self.dry_released = True  # only once it worked: until then, tried every cycle
                     except DriverError as e:
                         self.log(f"Could not hand the fans to the BMC for the dry run: {e}", "error")
-                    self.dry_released = True
             elif self.control:
                 # Taking the fans from the BMC, whatever had them: the start, the end of a failsafe, a
                 # hand-over or a dry run, a mode change from automatic, a refused command. Every one of
@@ -713,6 +726,8 @@ class Server:
         the meantime, which is safe, so this is no failsafe. speed: the one the reading answers to, or
         None. Called with self.lock held."""
         rpm = fan_avg(fans, "rpm", whole=False)
+        if self.not_following and now - self.retook >= self.RETAKE_EVERY and not self.retakes:
+            self.retakes = [now]  # smart mode may never hold a speed long enough to be judged again
         if speed is None or not rpm or not self.driver.exact_speed:
             self.follow_speed = None
             return
@@ -723,7 +738,12 @@ class Server:
             return
         expected = self.expected_rpm(speed)
         if expected is None:
-            if not self.not_following:  # the first time at this speed: what it gives
+            # the first time at this speed: what it gives. Not while a take-back is due or just done (the
+            # BMC may have them, as after a power-on), and only in order with the speeds around it
+            lower = [r for p, r in self.rpm_at.items() if p < speed]
+            higher = [r for p, r in self.rpm_at.items() if p > speed]
+            if (not self.not_following and not self.retakes and now - self.retook >= self.RETAKE_EVERY
+                    and (not lower or rpm >= max(lower)) and (not higher or rpm <= min(higher))):
                 self.rpm_at[speed] = round(rpm)
             return
         if abs(rpm - expected) <= expected * self.FOLLOW_TOLERANCE:
@@ -749,7 +769,8 @@ class Server:
         may run every fan at full speed. From then on this server's fans stay 5 % above that speed,
         until Fan Control restarts. Called with self.lock held."""
         low = next((f for f in fans if f.get("floor") and f["rpm"] is not None and f["rpm"] < f["floor"]), None)
-        if low is None or speed is None or speed + 5 <= self.rpm_floor:
+        self.floor_strikes = self.floor_strikes + 1 if low else 0  # one odd reading (a fan swapped) is not it
+        if low is None or speed is None or speed + 5 <= self.rpm_floor or self.floor_strikes < 2:
             return
         self.rpm_floor = min(60, speed + 5)
         self.log(f"{low['name']} turned {low['rpm']} RPM at {speed}%, under its BMC minimum of {low['floor']:.0f} RPM; "
@@ -774,7 +795,8 @@ class Server:
                 reading = f"{f['rpm']} rpm" if f["rpm"] is not None else f"{f['pct']}%" if f["pct"] is not None else "a fault"
                 self.log(f"Fan {f['name']} failed: {reading}", "error")
                 notify(self, "fan_failed", **vals, fan=f["name"], rpm=reading)
-        for name in self.fans_failed - now_failed:
+        turning = {f["name"] for f in fans if (f["rpm"] or 0) >= 300 or (f["pct"] or 0) > 0}
+        for name in (self.fans_failed - now_failed) & turning:  # gone from the list is not spinning again
             self.fans_failed.discard(name)
             self.log(f"Fan {name} is spinning again")
 
@@ -783,12 +805,14 @@ class Server:
         fans) leaves the server on a speed nobody chose. After the speed moves by 20 points or more,
         the average RPM has to move the same way by 10 % within 30 s. Called with self.lock held."""
         rpm = fan_avg(fans, "rpm", whole=False)
-        if effective != "manual" or speed is None or not rpm:
+        if effective != "manual" or speed is None or not rpm or self.calibrating():
             self.last_manual = self.probe = None
             return
         now = time.time()
         if self.last_manual and abs(speed - self.last_manual[0]) >= 20:
-            self.probe = {"t": now, "to": speed, "dir": 1 if speed > self.last_manual[0] else -1, "rpm": self.last_manual[1]}
+            # this reading answers to the speed being left, so it is the baseline (the one before
+            # answered to the speed before that, and a quick 30 -> 60 -> 30 looked ignored)
+            self.probe = {"t": now, "to": speed, "dir": 1 if speed > self.last_manual[0] else -1, "rpm": rpm}
         elif self.probe and abs(speed - self.probe["to"]) > 10:
             self.probe = None  # the speed moved on before the check was due
         self.last_manual = (speed, rpm)
@@ -822,13 +846,23 @@ class Server:
         locked = self.cmd_lock.acquire(timeout=-1 if timeout is None else timeout)
         try:
             self.driver.set_auto()
-            return True
+            ok = True
         except DriverError as e:
             self.log(f"Could not hand the fans back to the BMC: {e}", "error")
-            return False
+            ok = False
         finally:
             if locked:
                 self.cmd_lock.release()
+        if not locked and self.cmd_lock.acquire(timeout=10):
+            # the loop's command in flight may have landed after ours; stop is set, so it sends no other
+            try:
+                self.driver.set_auto()
+                ok = True
+            except DriverError:
+                pass
+            finally:
+                self.cmd_lock.release()
+        return ok
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True, name=self.id)
@@ -842,13 +876,19 @@ class Server:
             self.demo_backfill()
         notify(self, "started")
         while not self.stop.is_set():
-            self.tick = time.time()
+            self.tick = time.monotonic()
             try:
                 self.cycle()
             except Exception as e:  # never let a bug kill the loop and leave fans pinned low
-                self.log(f"Controller error: {e!r}; handing fans back to the BMC", "error")
-                notify(self, "controller_error", error=repr(e))
+                if repr(e) != self.last_bug:  # once per error: the alert cooldown is 0 by default
+                    self.last_bug = repr(e)
+                    self.log(f"Controller error: {e!r}; handing fans back to the BMC", "error")
+                    notify(self, "controller_error", error=repr(e))
                 self.release()
+                with self.lock:
+                    self.state.update(effective="auto", applied_speed=None, reason="controller error; the BMC has the fans")
+            else:
+                self.last_bug = None
             if time.time() - self.saved > SAVE_EVERY:
                 self.save_history()
             self.wake.wait(self.CALIB_EVERY if self.calibrating() else INTERVAL)
@@ -881,7 +921,7 @@ class Server:
 
 def stalled(servers):
     """Servers whose control loop died or stopped turning: their fans sit at the last speed set."""
-    now = time.time()
+    now = time.monotonic()
     return [s.id for s in list(servers) if s.thread and not s.stop.is_set()
             and (not s.thread.is_alive() or now - s.tick > STALL_SECONDS)]
 

@@ -3,6 +3,32 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.5] - 2026-10-17
+
+From a review of the control loop by independent reviewers:
+
+- **Turning dry run on while the BMC was busy left the fans in manual for the whole dry run**; the hand-over
+  is now tried every cycle until it works.
+- **`docker stop` during a slow command could leave the fans in manual**: a release that did not wait for
+  the loop hands the fans back again once the loop's last command is done.
+- **A failed fan that then vanished from the readings cleared its own fault** ("spinning again"); a fan that
+  turned and is no longer listed now trips the failsafe like a sensor that stops reporting.
+- **The ignored-command check compared with a reading one cycle too old**, so a quick 30 → 60 → 30 % looked
+  ignored and tripped a 10-minute failsafe. It is also off during a calibration.
+- **Supermicro: a hand-back before any take-over replaced the user's fan mode (HeavyIO) with Optimal**, and a
+  failed read of the mode was saved as the user's choice.
+- **A calibration no longer measures readings taken while the BMC had the fans.**
+- **The RPM each speed should give is not learned right after a take-back** (the BMC may still have the fans,
+  as after a power-on), nor out of order with the speeds around it.
+- **Quiet hours and schedule caps no longer cancel the easing out of a failsafe** in fixed and curve modes.
+- **The watchdog runs on a monotonic clock** (an NTP step no longer hides or fakes a stall), and a slow BMC
+  reading no longer counts towards a stall.
+- **A controller error is logged and alerted once per error**, not every cycle; odd Redfish answers are failed
+  readings instead of controller errors; a Redfish path from the BMC must stay on that host.
+- **A fan under its BMC minimum needs two readings** before the floor rises, and a new minimum speed resets it.
+- **iLO 4: a fan gone from the list keeps its PWM capped and released.**
+- **While the fans do not follow, they are taken back without waiting for a steady speed** (smart mode).
+
 ## [2.9.4] - 2026-10-17
 
 - **Smart mode learns nothing while the BMC has the fans** (they do not follow): the speed it saw then is not

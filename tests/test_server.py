@@ -329,8 +329,10 @@ class FailSafe(unittest.TestCase):
         srv.answers = [reading(self.OK, slow)]
         srv.cycle()                                   # 10 % sent
         srv.cycle()                                   # its reading: 500 RPM, under 600
+        srv.cycle()                                   # twice: one odd reading is not it
+        self.assertEqual(srv.rpm_floor, 15)
         srv.cycle()
-        self.assertEqual((srv.rpm_floor, srv.calls[-1]), (15, 15))
+        self.assertEqual(srv.calls[-1], 15)
         self.assertIn("BMC fan minimum 15%", srv.state["reason"])
         self.assertIn("under its BMC minimum of 600 RPM", srv.events[1]["msg"] + srv.events[0]["msg"])
 
@@ -362,7 +364,7 @@ class Calibration(unittest.TestCase):
             pct = srv.calib["steps"][srv.calib["i"]]
             temps = [("CPU 1", cpu(n) if cpu else 50, True)] + self.OK[1:]
             srv.answers = [reading(temps, [{"name": f"Fan{i}", "rpm": rpm_at(pct, i), "pct": None, "ok": True}
-                                           for i in (1, 2)])]
+                                           for i in (1, 2, 3)])]  # the same fans as before it started
             srv.cycle()
         return srv.calib
 
@@ -371,7 +373,7 @@ class Calibration(unittest.TestCase):
         c = self.calibrate(srv, lambda pct, i: max(2000, 1000 + 50 * pct))  # under 20 % no slower
         self.assertEqual(c["status"], "done")
         self.assertEqual([r["pct"] for r in c["results"]], list(Server.CALIB_STEPS))
-        self.assertEqual(c["results"][0]["fans"], {"Fan1": 6000, "Fan2": 6000})
+        self.assertEqual(c["results"][0]["fans"], {"Fan1": 6000, "Fan2": 6000, "Fan3": 6000})
         self.assertEqual((c["floor"], c["suggested"], c["fan_watts"]), (20, 20, 0))  # the power draw held
         self.assertEqual(sorted(set(srv.calls)), [0, 5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100])  # every step sent
         srv.answers = [reading(self.OK)]
@@ -471,7 +473,10 @@ class TakingBack(unittest.TestCase):
     def test_fans_that_stop_following_are_noticed_and_taken_back(self):
         srv = self.server("tb-follow")
         srv.answers = [reading(self.OK, self.fans(3000))]
-        for _ in range(4):
+        srv.cycle()
+        self.assertEqual(srv.rpm_at, {})                                 # nothing learned right after a take-back
+        srv.retook -= srv.RETAKE_EVERY                                   # time passes
+        for _ in range(3):
             srv.cycle()
         self.assertEqual((srv.rpm_at, srv.state["following"]), ({30: 3000}, True))
         srv.answers = [reading(self.OK, self.fans(5200))]                # the iDRAC's own idle speed
@@ -484,7 +489,7 @@ class TakingBack(unittest.TestCase):
         srv.retook = 0
         srv.cycle()
         srv.cycle()
-        self.assertEqual(srv.calls[-1], ("retake", 30))
+        self.assertIn(("retake", 30), srv.calls[-2:])                    # taken back, without waiting
         srv.answers = [reading(self.OK, self.fans(3050))]
         srv.cycle()
         self.assertFalse(srv.not_following)

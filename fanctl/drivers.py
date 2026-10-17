@@ -420,7 +420,7 @@ class SupermicroDriver(IPMIDriver):
         try:
             mode = int(self.ipmi("raw", "0x30", "0x45", "0x00").split()[0], 16)
         except (DriverError, ValueError, IndexError):
-            mode = 2
+            return  # not known: Optimal for now, read again next time, and never saved as the user's choice
         self.original = 2 if mode == 1 or mode not in self.MODES else mode  # Full is ours, not theirs
         try:
             with open(self.mode_file, "w", encoding="utf-8") as f:
@@ -433,6 +433,7 @@ class SupermicroDriver(IPMIDriver):
         self.set_speed(pct)
 
     def set_auto(self):
+        self.remember_mode()  # a hand-back before any take-over must not replace HeavyIO with Optimal
         self.full_since = None
         mode = 2 if self.original is None else self.original
         self.ipmi("raw", "0x30", "0x45", "0x01", f"0x{mode:02x}")
@@ -547,6 +548,14 @@ class RedfishDriver(Driver):
         self.paths = None  # discovered once: thermal, power, system
 
     def get(self, path):
+        if not str(path).startswith("/"):  # a path from the BMC glued to the host must stay on that host
+            raise DriverError(f"Redfish: refusing the path {str(path)[:60]!r}")
+        try:
+            return self._get(path)
+        except http.client.HTTPException as e:  # a truncated answer is a failed reading, not a crash
+            raise DriverError(f"Redfish {path}: {e!r}") from e
+
+    def _get(self, path):
         if self.verify_tls:
             https = urllib.request.HTTPSHandler(context=ssl.create_default_context())
         elif self.pin:
@@ -614,8 +623,11 @@ class RedfishDriver(Driver):
                 pass  # not every BMC reports power; temperatures still count
         system = self.get(self.paths["system"])
         self.model = system.get("Model") or self.model
-        temps, fans, watts = parse_redfish(thermal, power)
-        state = (system.get("PowerState") or "").lower()
+        try:
+            temps, fans, watts = parse_redfish(thermal, power)
+            state = (system.get("PowerState") or "").lower()
+        except (TypeError, KeyError, ValueError, AttributeError) as e:  # an odd answer is a failed reading
+            raise DriverError(f"unexpected Redfish answer: {e!r}") from e
         return finish(temps, fans, watts, "on" if state == "on" else "off" if state == "off" else None)
 
 
@@ -655,7 +667,7 @@ class ILO4UnlockedDriver(RedfishDriver):
 
     def read(self):
         data = super().read()
-        self.fan_count = len(data["fans"]) or self.fan_count
+        self.fan_count = max(len(data["fans"]), self.fan_count or 0) or None  # a fan gone keeps its PWM capped
         return data
 
     def diagnose(self):
