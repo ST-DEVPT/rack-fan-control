@@ -3,6 +3,11 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.12.1] - 2026-10-17
+
+- 2.12.0 was not published: the iDRAC thermal settings panel took over the check that tells an out-of-range
+  value in the control panel. Fixed; everything 2.12.0 lists ships here.
+
 ## [2.12.0] - 2026-10-17
 
 - **More curves on other sensors**: up to 3 extra curves, each on its own sensor (a GPU, a disk shelf, the exhaust

@@ -753,7 +753,7 @@ $("#save").onclick = async () => {
 };
 
 // A number outside its range is never dropped in silence: the field says what it accepts.
-$(".fields").addEventListener("input", e => {
+$("#control-body .fields").addEventListener("input", e => {
   const el = e.target;
   if (el.type !== "number") return;
   const bad = el.value !== "" && !el.checkValidity();
