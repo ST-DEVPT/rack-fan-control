@@ -519,6 +519,16 @@
           <code>script: /usr/local/bin/fan-control-backup</code> to <code>/etc/vzdump.conf</code>.</p>
         <div class="code"><pre tabindex="0" id="au-pve"></pre><button class="copy" data-copy="au-pve">Copy</button></div>
       </section>
+      <section class="int-step">
+        <h2><span class="n">5</span> Host sensors</h2>
+        <p>Temperatures the BMC cannot see, a GPU or the disks, sent by a script on the host. They count like any
+          sensor with a warning threshold: smart mode keeps them clear of it, the BMC takes over near it, and the
+          curve can follow one. They never stand in for the CPU, and one that stops arriving hands the fans to the
+          BMC. A sensor token can send them and do nothing else.</p>
+        <div class="tokens" data-kind="sensor"></div>
+        <div class="code"><pre tabindex="0" id="au-host"></pre><button class="copy" data-copy="au-host">Copy</button></div>
+        <p class="hint" data-i18n="au-forget">To stop using them, send <code>{"forget": true}</code> to the same address.</p>
+      </section>
     </div>
     <aside class="int-side">
       <h2>What it can do</h2>

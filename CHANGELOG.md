@@ -3,6 +3,13 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.11.0] - 2026-10-17
+
+- **Host sensors**: a script on the host sends the temperatures the BMC cannot see, a GPU or the disks, with a
+  new *sensor* token that can do nothing else (`POST /api/sensors`). They count like any sensor with a
+  warning threshold (smart mode, failsafe, curve source), never stand in for the CPU, and one that stops
+  arriving hands the fans to the BMC. The Automation page has a ready script for NVIDIA GPUs and disks.
+
 ## [2.10.0] - 2026-10-17
 
 - **IPMI cipher suite and port**: newer ipmitool asks for cipher suite 17, which some BMCs list but cannot do

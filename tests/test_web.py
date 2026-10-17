@@ -699,3 +699,22 @@ class Hardening(Base):
         self.assertEqual(unique_id("Test", set()), "test-server")
         with self.assertRaises(ValueError):
             validate_server({"driver": "demo", "name": 'x"\n  - platform: command_line'})
+
+
+class HostSensorPush(Base):
+    def test_a_sensor_token_pushes_and_does_nothing_else(self):
+        st, _, data = self.post("/api/tokens", {"name": "host", "kind": "sensor"})
+        row = json.loads(data)
+        bearer = {"Authorization": "Bearer " + row["token"]}
+        try:
+            body = {"temps": [{"name": "GPU0", "value": 55, "warn": 85}]}
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", body, bearer)[0], 200)
+            self.assertIn("GPU0", SERVERS["rack-a"].pushed)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", body)[0], 401)       # no token
+            self.assertEqual(self.req("GET", "/api/state?server=rack-a", headers=bearer)[0], 401)  # push only
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-a", {"mode": "auto"}, bearer)[0], 401)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", {"temps": [{"name": "x", "value": 900}]}, bearer)[0], 400)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", {"forget": True}, bearer)[0], 200)
+            self.assertEqual(SERVERS["rack-a"].pushed, {})
+        finally:
+            self.post("/api/tokens/revoke", {"id": row["id"]})

@@ -480,6 +480,14 @@ curl -X POST -H "Authorization: Bearer <control token>" -H "Content-Type: applic
 ```
 
 Settings take only the fields sent; `POST /api/handover` takes `{"minutes": 120}` (`0` takes the fans back).
+**Host sensors**: temperatures the BMC cannot see (a GPU, the disks) can be sent by a script on the host
+with a *sensor* token, which can do nothing else: `POST /api/sensors?server=<id>` with
+`{"temps": [{"name": "GPU 0", "value": 61, "warn": 85}]}`, every minute (the Automation page has a script
+for NVIDIA GPUs and disks through `drivetemp`). They count like any sensor with a warning threshold: smart
+mode keeps them clear of it, the BMC takes over near it, and the curve can follow one. They never stand in
+for the CPU, so they can only add cooling, and one that stops arriving (2 minutes) hands the fans to the
+BMC; `{"forget": true}` stops using them.
+
 The page also has a **Proxmox** backup hook: saved as a `vzdump` hook script, it hands the fans to the BMC
 when a backup job starts and takes them back when it ends.
 

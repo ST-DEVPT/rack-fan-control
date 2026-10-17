@@ -628,3 +628,36 @@ class LongHistory(unittest.TestCase):
         from fanctl.control import aggregate
         pts = [{"t": i, "cpu": 50, "speed": None if i < 7 else 30} for i in range(10)]
         self.assertIsNone(aggregate(pts)["speed"])
+
+
+class HostSensors(unittest.TestCase):
+    def tearDown(self):
+        for f in DATA.glob("settings-hs-*.json"):
+            f.unlink()
+
+    def test_pushed_temperatures_count_and_a_silent_one_trips_the_failsafe(self):
+        import time
+        srv = Scripted("hs-gpu")
+        srv.answers = [reading(FailSafe.OK)]
+        srv.push_sensors([{"name": "GPU0", "value": 60, "warn": 85}], time.time())
+        srv.cycle()
+        gpu = [t for t in srv.state["sensors"]["temps"] if t["name"] == "host: GPU0"]
+        self.assertEqual((gpu[0]["value"], gpu[0]["warn"], gpu[0]["cpu"]), (60.0, 85.0, False))
+        srv.push_sensors([{"name": "GPU0", "value": 83, "warn": 85}], time.time())
+        srv.cycle()
+        self.assertTrue(srv.state["failsafe"])                       # near its threshold: the BMC takes over
+        srv.failsafe_since -= 301
+        srv.pushed["GPU0"]["t"] -= 1000                               # the host stopped sending
+        for _ in range(3):
+            srv.cycle()
+        self.assertEqual(srv.state["reason"], "host: GPU0 stopped reporting")
+        srv.forget_pushed("tester")
+        srv.failsafe_since -= 301
+        srv.cycle()
+        self.assertFalse(srv.state["failsafe"])
+
+    def test_nonsense_is_refused(self):
+        srv = Scripted("hs-bad")
+        for bad in ([{"name": "x", "value": 500}], [{"name": "", "value": 40}], "GPU", [{"name": "x", "value": 40, "warn": 5}]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                srv.push_sensors(bad, 0)

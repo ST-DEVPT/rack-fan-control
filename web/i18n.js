@@ -116,7 +116,9 @@ const PT = {
   "Download what the BMC answers, without passwords or addresses, for a bug report": "Descarregar o que o BMC responde, sem passwords nem endereços, para reportar um problema",
   "Create a token": "Criar um token", "Create": "Criar", "Token name": "Nome do token", "Revoke": "Revogar",
   "Name, e.g. Homarr": "Nome, p. ex. Homarr", "Name, e.g. Home Assistant": "Nome, p. ex. Home Assistant",
-  "Automation": "Automação", "IPMI cipher suite": "Suite de cifra IPMI",
+  "Automation": "Automação", "Host sensors": "Sensores do host", "Name, e.g. GPU host": "Nome, p. ex. host da GPU",
+  "Temperatures the BMC cannot see, a GPU or the disks, sent by a script on the host. They count like any sensor with a warning threshold: smart mode keeps them clear of it, the BMC takes over near it, and the curve can follow one. They never stand in for the CPU, and one that stops arriving hands the fans to the BMC. A sensor token can send them and do nothing else.":
+    "Temperaturas que o BMC não vê, uma GPU ou os discos, enviadas por um script no host. Contam como qualquer sensor com limite de aviso: o modo smart mantém-nas longe dele, o BMC assume perto dele e a curva pode seguir uma. Nunca substituem o CPU, e uma que deixe de chegar entrega as ventoinhas ao BMC. Um token de sensores pode enviá-las e mais nada.", "IPMI cipher suite": "Suite de cifra IPMI",
   "Automatic tries ipmitool's default, then 3. Pick 3 when the BMC says \"Unable to establish IPMI v2 / RMCP+ session\"":
     "O automático tenta a do ipmitool e depois a 3. Escolha 3 quando o BMC diz \"Unable to establish IPMI v2 / RMCP+ session\"", "Edit server": "Editar servidor", "The BMC is controlling the fans.": "O BMC está a controlar as ventoinhas.",
   "the BMC refused the fan command": "o BMC recusou o comando das ventoinhas",
@@ -319,6 +321,7 @@ const PT_HTML = {
   "au-ha": "Dois botões e um sensor, para o <code>configuration.yaml</code>; o token vai para o <code>secrets.yaml</code>.",
   "au-server": "Junte <code>?server=</code> com o id do servidor. As proteções aplicam-se a todas as alterações, venham de onde vierem.",
   "au-pve": "O BMC fica com as ventoinhas enquanto as cópias de segurança correm e devolve-as quando acabam. Guarde isto como <code>/usr/local/bin/fan-control-backup</code>, torne-o executável e junte <code>script: /usr/local/bin/fan-control-backup</code> ao <code>/etc/vzdump.conf</code>.",
+  "au-forget": "Para deixar de os usar, envie <code>{\"forget\": true}</code> para o mesmo endereço.",
   "pm-labels": "Todas as séries têm as etiquetas <code>server</code>, <code>name</code> e <code>driver</code>.",
   "gf-first": "O dashboard lê do Prometheus. Se ainda não estiver a recolher deste painel, configure isso primeiro na página <a href=\"#/prometheus\">Prometheus</a>.",
   "gf-import": "No Grafana: <b>Dashboards → New → Import</b>, carregue o <code>fan-control.json</code> e escolha a fonte de dados Prometheus quando for pedida.",
@@ -428,6 +431,8 @@ const PT_PATTERNS = [
     "Seguem o relógio do servidor, agora $1 ($2). Defina TZ no ficheiro compose se não for a sua hora."],
   [/^Fan (.+) reads 0 and has not turned since Fan Control started: taken as an empty bay$/,
     "A ventoinha $1 lê 0 e não rodou desde que o Fan Control arrancou: tomada como ranhura vazia"],
+  [/^Host sensors now reporting: (.+)$/, "Sensores do host a reportar: $1"],
+  [/^Host sensors forgotten( by (.+))?: (.+)$/, (m, by, who, names) => `Sensores do host esquecidos${who ? " por " + who : ""}: ${names}`],
   [/^Could not start: (.+)$/, "Não foi possível iniciar: $1"],
   [/^the CPU is at (.+); calibrate when it is 10°C or more below the failsafe$/, "o CPU está a $1; calibre quando estiver pelo menos 10 °C abaixo do failsafe"],
   [/^the failsafe took over \((.+)\)$/, "o failsafe assumiu o controlo ($1)"], [/^the CPU warmed by (.+)$/, "o CPU aqueceu $1"],

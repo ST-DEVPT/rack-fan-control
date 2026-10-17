@@ -72,6 +72,7 @@ class Server:
         self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
         self.floor_strikes = 0
         self.retakes = []          # times to take the fans back from the BMC again (see command)
+        self.pushed = {}           # host sensors: name -> {"value", "warn", "t"} (see push_sensors)
         self.retook = 0
         self.rpm_at = {}           # speed -> RPM seen while the fans followed (see check_follow)
         self.follow_speed, self.follow_since, self.follow_strikes = None, 0, 0
@@ -191,6 +192,53 @@ class Server:
         except OSError:
             pass
         self.log(f"Smart mode starts learning afresh{' (' + who + ')' if who else ''}")
+
+    # ---- host sensors: temperatures the BMC cannot see (a GPU, the disks), pushed by a script on the host
+    #
+    # They count like any sensor with a warning threshold: smart mode keeps them clear of it, the failsafe
+    # trips near it, and the curve can follow one. They never stand in for the CPU, so they can only add
+    # cooling. One that stops arriving is "stopped reporting", like a BMC sensor: the BMC takes over.
+
+    PUSH_STALE = 120  # s after which a pushed reading no longer counts
+    PUSH_MAX = 32
+
+    def push_sensors(self, temps, now):
+        """temps: [{"name", "value", "warn"?}]. Raises ValueError for anything not plausible."""
+        if not isinstance(temps, list) or len(temps) > self.PUSH_MAX:
+            raise ValueError(f"temps must be a list of at most {self.PUSH_MAX} sensors")
+        fresh = {}
+        for t in temps:
+            if not isinstance(t, dict):
+                raise ValueError("each sensor is {\"name\": ..., \"value\": ..., \"warn\": ...}")
+            name, value, warn = str(t.get("name", "")).strip(), t.get("value"), t.get("warn")
+            if not (1 <= len(name) <= 40 and all(c.isprintable() for c in name)):
+                raise ValueError("a sensor name has 1 to 40 printable characters")
+            if not (type(value) in (int, float) and -20 <= value <= 150):
+                raise ValueError(f"{name}: the value must be a temperature from -20 to 150 °C")
+            if warn is not None and not (type(warn) in (int, float) and 20 <= warn <= 150):
+                raise ValueError(f"{name}: the warning threshold must be from 20 to 150 °C, or left out")
+            fresh[name] = {"value": float(value), "warn": None if warn is None else float(warn), "t": now}
+        with self.lock:
+            new = set(fresh) - set(self.pushed)
+            self.pushed.update(fresh)
+        if new:
+            self.log(f"Host sensors now reporting: {', '.join(sorted(new))}")
+
+    def forget_pushed(self, who=""):
+        """Stop counting the host sensors: one that stops arriving otherwise keeps the BMC in control."""
+        with self.lock:
+            names = set(self.pushed)
+            self.pushed.clear()
+            self.known_temps -= {f"host: {n}" for n in names}
+            self.missing = {k: v for k, v in self.missing.items() if k not in {f"host: {n}" for n in names}}
+        if names:
+            self.log(f"Host sensors forgotten{' by ' + who if who else ''}: {', '.join(sorted(names))}")
+
+    def merge_pushed(self, sensors, now):
+        with self.lock:
+            fresh = [(n, p) for n, p in self.pushed.items() if now - p["t"] <= self.PUSH_STALE]
+        sensors["temps"] += [{"name": f"host: {n}", "entity": "host", "value": p["value"], "cpu": False, "ok": True,
+                              "warn": p["warn"]} for n, p in sorted(fresh)]
 
     # ---- hand-over: the fans left to the BMC for a while (maintenance, a stress test), then taken back
 
@@ -420,6 +468,7 @@ class Server:
         if sensors is None:
             return
         power = sensors.pop("power") or self.state["power"]  # not known this time: as it was
+        self.merge_pushed(sensors, now)
         if power == "on" and self.state["power"] == "off":
             # a starting host can hand the fans back to the BMC, more than once (seen on iDRAC 7): take
             # them back now, and again when the start-up is likely over

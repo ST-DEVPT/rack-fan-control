@@ -76,6 +76,30 @@ function renderAutomation() {
     '    unit_of_measurement: "°C"', "    scan_interval: 30", "",
     "# secrets.yaml", 'fan_control_bearer: "Bearer <token>"',
   ].join("\n");
+  renderTokens("sensor");
+  $("#au-host").textContent = [
+    "#!/bin/sh",
+    "# Host temperatures for Fan Control. From root's cron, every minute:",
+    "#   * * * * * /usr/local/bin/fan-control-sensors",
+    `URL="${base}/api/sensors?server=${s.id}"`,
+    'TOKEN="<sensor token>"',
+    'temps=""',
+    "# NVIDIA GPUs: their own warning is near 85 °C",
+    "if command -v nvidia-smi > /dev/null; then",
+    "  for row in $(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits | tr -d ' '); do",
+    '    temps="$temps{\\"name\\": \\"GPU ${row%%,*}\\", \\"value\\": ${row#*,}, \\"warn\\": 85},"',
+    "  done",
+    "fi",
+    "# disks, through the drivetemp kernel module (modprobe drivetemp): most want to stay under 50 °C",
+    "for f in /sys/class/hwmon/hwmon*/temp1_input; do",
+    '  [ "$(cat "${f%/*}/name" 2> /dev/null)" = drivetemp ] || continue',
+    '  disk=$(basename "$(readlink -f "${f%/*}/device")")',
+    '  temps="$temps{\\"name\\": \\"disk $disk\\", \\"value\\": $(( $(cat "$f") / 1000 )), \\"warn\\": 50},"',
+    "done",
+    '[ -n "$temps" ] || exit 0',
+    'curl -fsS -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+    '  -d "{\\"temps\\": [${temps%,}]}" "$URL" > /dev/null',
+  ].join("\n");
   $("#au-pve").textContent = [
     "#!/bin/sh",
     "# Proxmox vzdump hook: the BMC takes the fans while backups run",
@@ -134,7 +158,7 @@ function renderTokens(kind) {
   const rows = integ.tokens.filter(t => t.kind === kind);
   const when = t => t ? new Date(t * 1000).toLocaleDateString() : translate("never");
   box.innerHTML = `
-    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate({ widget: "Name, e.g. Homarr", metrics: "Name, e.g. Prometheus", control: "Name, e.g. Home Assistant" }[kind])}"
+    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate({ widget: "Name, e.g. Homarr", metrics: "Name, e.g. Prometheus", control: "Name, e.g. Home Assistant", sensor: "Name, e.g. GPU host" }[kind])}"
       aria-label="${translate("Token name")}" required><button class="btn">${translate("Create")}</button></form>` : ""}
     ${fresh[kind] ? `<div class="code"><pre id="tok-${kind}">${esc(fresh[kind])}</pre><button class="copy" data-copy="tok-${kind}">Copy</button></div>
       <p class="hint">${translate("Copy it now: only a hash of it is kept, so it is not shown again.")}</p>` : ""}

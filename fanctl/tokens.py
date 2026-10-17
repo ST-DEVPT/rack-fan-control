@@ -14,7 +14,7 @@ from . import config
 from .config import DATA_DIR, read_json, write_json
 
 TOKENS_FILE = DATA_DIR / "tokens.json"
-KINDS = ("widget", "metrics", "control")
+KINDS = ("widget", "metrics", "control", "sensor")
 lock = threading.Lock()
 _cache = None
 
@@ -77,7 +77,7 @@ def public():
 def create(name, kind):
     name = str(name or "").strip()
     if kind not in KINDS:
-        raise ValueError("kind must be widget, metrics or control")
+        raise ValueError("kind must be widget, metrics, control or sensor")
     if not 1 <= len(name) <= 40:
         raise ValueError("give the token a name of 1 to 40 characters")
     token = "fc_" + secrets.token_urlsafe(24)

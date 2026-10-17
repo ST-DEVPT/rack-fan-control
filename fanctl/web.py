@@ -286,7 +286,8 @@ def get_integrations(h):
                         "metrics_open": not config.WEB_PASSWORD and not tokens.any_token("metrics"),
                         "embed_token": tokens.any_token("widget"), "interval": INTERVAL,
                         "tokens": tokens.public(), "role": h.role(),
-                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN), "control": False},
+                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN), "control": False,
+                                       "sensor": False},
                         "widget_fields": widget_fields(), "widget_all": WIDGET_FIELDS,
                         "servers": [{"id": s.id, "name": s.name} for s in list(SERVERS.values())]})
 
@@ -619,6 +620,24 @@ def post_handover(h):
     return h.send(200, {"handed_until": srv.handed_until})
 
 
+@route("POST", r"/api/sensors", "public")
+def post_sensors(h):
+    """Host sensors pushed by a script: an admin session, a control token or a sensor token."""
+    if not (h.role() == "admin" or h.control_token() or h.control_token("sensor")):
+        return h.send(401, {"error": "send a sensor or control token as a Bearer token"})
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if h.body.get("forget"):
+        srv.forget_pushed(h.who())
+        return h.send(200, {"ok": True})
+    try:
+        srv.push_sensors(h.body.get("temps"), time.time())
+    except ValueError as e:
+        return h.send(400, {"error": str(e)})
+    return h.send(200, {"ok": True, "stale_after": srv.PUSH_STALE})
+
+
 @route("POST", r"/api/smart/forget", "admin")
 def post_smart_forget(h):
     srv = server_or_404(h)
@@ -680,13 +699,13 @@ class Handler(BaseHTTPRequestHandler):
         """The address to account sign-ins and changes to (see sessions.client_address)."""
         return client_address(self.client_address[0], self.headers.get("X-Forwarded-For", ""))
 
-    def control_token(self):
-        """The name of the control token sent as a Bearer header, or None."""
+    def control_token(self, kind="control"):
+        """The name of the token of this kind sent as a Bearer header, or None."""
         bearer = self.headers.get("Authorization", "")
-        return tokens.name_of(bearer.removeprefix("Bearer "), "control") if bearer.startswith("Bearer ") else None
+        return tokens.name_of(bearer.removeprefix("Bearer "), kind) if bearer.startswith("Bearer ") else None
 
     def who(self):
-        token = None if self.role() else self.control_token()
+        token = None if self.role() else self.control_token() or self.control_token("sensor")
         return f'token "{token}" at {self.client()}' if token else f"{self.role()} at {self.client()}"
 
     answered = False  # the status line went out: past it, an error can only close the connection
