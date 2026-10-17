@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
+  <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#supported-hardware">Hardware</a> ·
   <a href="#fan-control">How it works</a> ·
   <a href="#protection">Safety</a> ·
@@ -43,6 +43,17 @@ temperature you choose with as little fan as possible, and hands the fans back t
 is unknown: a missing reading, a sensor that disappears, a failed fan, a command the BMC ignores, a crash or
 a container stop. A watchdog restarts it if it stalls, and a small script on the host covers it being killed.
 
+## What a cron script cannot do
+
+| | `ipmitool` in cron | Fan Control |
+| --- | --- | --- |
+| The script or container dies | Fans stay low, nobody watching | Watchdog restarts it; the fans go back to the BMC on stop, crash (host guard) or stall |
+| The BMC quietly takes the fans back (host reboot, BMC reset) | Never noticed | Noticed by RPM, taken back, and you are told |
+| A GPU, HBA or disk gets hot | The CPU curve never sees it | Every BMC threshold watched; host GPU/disk temperatures can be pushed in |
+| A fan stops | Keeps the curve | Failsafe: the BMC takes over |
+| What speed is safe to set | Guesswork | **Calibration** measures every speed and each fan's BMC minimum |
+| Load spikes | Fans chase every one | **Smart mode** learns your server and rides out bursts |
+
 ## At a glance
 
 <p align="center"><img alt="A server's page: live readings and the last hour" src="docs/server.jpg"></p>
@@ -64,6 +75,13 @@ a container stop. A watchdog restarts it if it stalls, and a small script on the
 - **Every server in one place**: scan your network for BMCs, let each say what it is, test it, add it.
   Monitoring-only servers (any Redfish or IPMI BMC) get the same history, alerts and metrics.
 - **Quiet hours and schedules**: cap the fans at night, or by day and hour, without giving up protection.
+- **Fan calibration**: one button measures the RPM and the power draw at every speed and suggests the minimum
+  speed, staying clear of each fan's BMC minimum.
+- **Keeps hold of the fans**: checks that they turn as fast as the speed set should make them, and takes them
+  back when the BMC grabs them (a host reboot, a BMC reset).
+- **Automation**: Home Assistant, n8n, cron or Proxmox can change modes and hand the fans to the BMC with a
+  scoped token; a host script can add GPU and disk temperatures.
+- **Looks back**: event marks on the history chart, settings history with undo, the BMC's own event log, CSV.
 - **Alerts** on Discord, ntfy, Gotify or any webhook: failsafe, failed fan, ignored commands, a hot room.
 - **Prometheus metrics**, a **Grafana** dashboard, alert rules, and **Homarr** widgets that share only what
   you choose.
