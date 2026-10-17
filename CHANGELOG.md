@@ -3,6 +3,25 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.9] - 2026-10-17
+
+2.9.8 was not published (a lint check failed); its changes ship here. Plus the dashboard, from an independent
+review:
+
+- **Keyboard focus survives the 5-second refresh** on the sidebar, the overview cards, the schedule and the
+  curve points (it fell back to the top of the page).
+- **In °F, temperature differences convert as differences** ("warmed by 10 °C" was shown as 50 °F, not 18 °F).
+- **Portuguese**: the failsafe alert and its reasons, the monitoring-only note, failsafe cleared, PCIe cooling,
+  controller errors, new certificates, the Discord test toast, curve presets, "Edit server", and European
+  Portuguese wording.
+- **Over the failsafe reads "over"**, not "-2 °C below".
+- **The Alerts page reloads when opened** (one failed load left it dead), **test and import buttons come back
+  after a network error**, and live regions are only rewritten when their text changes (screen readers
+  repeated them every few seconds).
+- **A read-only account cannot reach the controls by keyboard either**; the history chart is announced as an
+  image.
+- **The smart mode report counts only the time spent in smart mode.**
+
 ## [2.9.8] - 2026-10-17
 
 Operations, from an independent review:

@@ -105,7 +105,7 @@ def main():
         log.warning("DISCORD_WEBHOOK_URL is not a Discord webhook URL; it is ignored")
     if not config.WEB_PASSWORD:
         log.warning("WEB_PASSWORD is not set; the dashboard is open to anyone who can reach it")
-    elif config.WEB_PASSWORD == "change-me":
+    elif config.WEB_PASSWORD == "change-me":  # noqa: S105 (the example file's placeholder, not a secret)
         log.error("WEB_PASSWORD is still the example's change-me: anyone who read the README can sign in as admin")
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

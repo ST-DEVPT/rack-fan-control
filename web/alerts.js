@@ -229,9 +229,12 @@ $("#al-save").onclick = async () => {
 $("#al-discard").onclick = () => loadAlerts();
 $("#al-test").onclick = async () => {
   $("#al-test").disabled = true;
-  const r = await api("/api/test-alert", { kind: aKind, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + await failure(r), !r.ok);
-  $("#al-test").disabled = false;
+  try {
+    const r = await api("/api/test-alert", { kind: aKind, config: alertsBody() });
+    toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + await failure(r), !r.ok);
+  } finally {
+    $("#al-test").disabled = false;
+  }
 };
 
 // ---------------------------------------------------------------- ntfy, Gotify, webhook
@@ -261,9 +264,12 @@ $("#channels").addEventListener("click", async e => {
   if (!b) return;
   const c = b.closest(".ch").dataset.ch, kind = aKind === "report" ? "failsafe" : aKind;
   b.disabled = true;
-  const r = await api("/api/test-alert", { kind, channel: c, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + await failure(r), !r.ok);
-  b.disabled = false;
+  try {
+    const r = await api("/api/test-alert", { kind, channel: c, config: alertsBody() });
+    toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + await failure(r), !r.ok);
+  } finally {
+    b.disabled = false;
+  }
 });
 
 loadAlerts();

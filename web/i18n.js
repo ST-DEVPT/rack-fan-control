@@ -102,7 +102,7 @@ const PT = {
     "O token lê isto e nada mais: nunca o endereço do BMC, definições, eventos ou mensagens de erro.",
   "Homarr 2.0: native widget": "Homarr 2.0: widget nativo", "Any dashboard: iFrame widget": "Qualquer dashboard: widget iFrame",
   "App tile status": "Estado para o tile da app", "Download widget": "Descarregar widget", "All servers": "Todos os servidores",
-  "Homarr reaches this address over": "O Homarr chega a este endereço pela", "Your network": "Sua rede", "The internet": "Internet",
+  "Homarr reaches this address over": "O Homarr chega a este endereço pela", "Your network": "A sua rede", "The internet": "Internet",
   "The same machine": "Mesma máquina", "Address Homarr uses": "Endereço que o Homarr usa",
   "A Custom Widget that Homarr fetches itself, with its own options for the server, unit, chart and air temperatures.":
     "Um Custom Widget que o próprio Homarr vai buscar, com opções para o servidor, unidade, gráfico e temperaturas do ar.",
@@ -116,7 +116,15 @@ const PT = {
   "Download what the BMC answers, without passwords or addresses, for a bug report": "Descarregar o que o BMC responde, sem passwords nem endereços, para reportar um problema",
   "Create a token": "Criar um token", "Create": "Criar", "Token name": "Nome do token", "Revoke": "Revogar",
   "Name, e.g. Homarr": "Nome, p. ex. Homarr", "Name, e.g. Home Assistant": "Nome, p. ex. Home Assistant",
-  "Automation": "Automação", "Fans not following": "Ventoinhas não seguem", "The fans follow Fan Control again": "As ventoinhas voltaram a seguir o Fan Control",
+  "Automation": "Automação", "Edit server": "Editar servidor", "The BMC is controlling the fans.": "O BMC está a controlar as ventoinhas.",
+  "the BMC refused the fan command": "o BMC recusou o comando das ventoinhas",
+  "Third-party PCIe cooling response enabled": "Resposta de arrefecimento PCIe de terceiros ativada",
+  "Third-party PCIe cooling response disabled": "Resposta de arrefecimento PCIe de terceiros desativada",
+  "Quiet curve loaded. Apply to use it": "Curva silenciosa carregada. Aplique para a usar",
+  "Balanced curve loaded. Apply to use it": "Curva equilibrada carregada. Aplique para a usar",
+  "Cool curve loaded. Apply to use it": "Curva fresca carregada. Aplique para a usar",
+  "Storage curve loaded. Apply to use it": "Curva para armazenamento carregada. Aplique para a usar",
+  "Fan Control did not answer": "O Fan Control não respondeu", "Fans not following": "Ventoinhas não seguem", "The fans follow Fan Control again": "As ventoinhas voltaram a seguir o Fan Control",
   "Their RPM does not match the speed set: the BMC seems to have taken them back. Fan Control keeps taking them again.":
     "As RPM não correspondem à velocidade definida: o BMC parece tê-las retomado. O Fan Control continua a tentar retomá-las.",
   "0 when the fans do not turn as the speed set should make them": "0 quando as ventoinhas não rodam como a velocidade definida devia fazer",
@@ -126,8 +134,7 @@ const PT = {
   "quiet hours": "horário silencioso", "schedule": "horário", "dry run": "simulação", "PCIe cooling": "arrefecimento PCIe",
   "Load": "Carregar", "Earlier settings": "Definições anteriores", "BMC event log": "Registo de eventos do BMC",
   "Proxmox backups": "Cópias de segurança do Proxmox", "Read again": "Ler outra vez", "Clear the log": "Limpar o registo",
-  "Reading the BMC…": "A ler o BMC…", "Event log cleared": "Registo de eventos limpo", "Nothing saved yet.": "Ainda nada foi guardado.",
-  "Fan Control did not answer": "O Fan Control não respondeu", "the oldest kept": "a mais antiga guardada",
+  "Reading the BMC…": "A ler o BMC…", "Event log cleared": "Registo de eventos limpo", "Nothing saved yet.": "Ainda nada foi guardado.", "the oldest kept": "a mais antiga guardada",
   "nothing changed": "nada mudou", "Earlier settings loaded. Apply to use them": "Definições anteriores carregadas. Aplique para as usar",
   "A full log stops recording: clear it once you have read it.": "Um registo cheio deixa de gravar: limpe-o depois de o ler.",
   "Clear the BMC's event log? Its entries are gone for good; read them first.":
@@ -156,7 +163,7 @@ const PT = {
     "Recebe cada alerta em JSON: evento, nível, título, mensagem, servidor, hora e valores. O Home Assistant, o n8n e a maioria das ferramentas de automação aceitam-no tal como vem.",
   "Alerts when something needs you, on Discord, ntfy, Gotify or any webhook, and a Discord status card that keeps itself up to date.":
     "Alertas quando algo precisa de si, no Discord, ntfy, Gotify ou qualquer webhook, e um cartão de estado no Discord que se mantém atualizado.",
-  "BMC password": "Password do BMC", "BMC user": "Utilizador do BMC", "CPU target temperature": "Temperatura alvo do CPU",
+  "BMC password": "Palavra-passe do BMC", "BMC user": "Utilizador do BMC", "CPU target temperature": "Temperatura alvo do CPU",
   "Copy the curve of another server": "Copiar a curva de outro servidor", "Discord alerts": "Alertas no Discord",
   "Download fan-control.json": "Descarregar fan-control.json",
   "Homelab, Xeon E5 class CPUs": "Homelab, CPUs da classe Xeon E5",
@@ -430,13 +437,30 @@ const PT_PATTERNS = [
   [/^Fan calibration finished: (\d+) RPM at (\d+)%, (\d+) RPM at (\d+)%; no speed kept every fan turning$/, "Calibração das ventoinhas concluída: $1 RPM a $2%, $3 RPM a $4%; nenhuma velocidade manteve todas as ventoinhas a rodar"],
   [/^Fan calibration stopped at (\d+)%: (.+); every fan kept turning down to (\d+)%$/, "Calibração das ventoinhas parada a $1%: $2; todas as ventoinhas rodaram até $3%"],
   [/^Fan calibration stopped at (\d+)%: (.+)$/, "Calibração das ventoinhas parada a $1%: $2"],
+  [/^CPU (\d+)°C ≥ failsafe (\d+)°C$/, "CPU a $1°C ≥ failsafe de $2°C"],
+  [/^CPU (\d+)°C, resuming below (\d+)°C$/, "CPU a $1°C, retoma abaixo de $2°C"],
+  [/^[Ee]xhaust air (\d+)°C, limit (\d+)°C$/, "saída de ar a $1°C, limite de $2°C"],
+  [/^(.+) (\d+)°C, near its (\d+)°C warning threshold$/, "$1 a $2°C, perto do limite de aviso de $3°C"],
+  [/^Failsafe cleared at CPU (\d+)°C$/, "Failsafe terminado com o CPU a $1°C"],
+  [/^Third-party PCIe cooling command refused: (.+)$/, "Comando de arrefecimento PCIe de terceiros recusado: $1"],
+  [/^Could not hand the fans to the BMC for the dry run: (.+)$/, "Não foi possível entregar as ventoinhas ao BMC para a simulação: $1"],
+  [/^Controller error: (.+); handing fans back to the BMC$/, "Erro do controlador: $1; as ventoinhas voltam ao BMC"],
+  [/^New TLS certificate of the BMC accepted by (.+)$/, "Novo certificado TLS do BMC aceite por $1"],
+  [/^(.+), so the BMC keeps its own fan curve\. Temperatures, history, Discord alerts and metrics work as usual\.$/,
+    "$1, por isso o BMC mantém a sua própria curva. Temperaturas, histórico, alertas e métricas funcionam como sempre."],
+  [/^(.+) over failsafe$/, "$1 acima do failsafe"],
+  [/^Test "(.+)" sent to Discord( with the current readings)?$/, (m, k, cur) => `Teste "${translate(k)}" enviado para o Discord${cur ? " com as leituras atuais" : ""}`],
   [/^Could not apply: (.+)$/, "Não foi possível aplicar: $1"], [/^(.+) added$/, "$1 adicionado"], [/^(.+) removed$/, "$1 removido"],
 ];
 
 // Text written by the server (reasons, events) carries °C; in °F mode convert it where it is shown.
 function localize(text) {
   const t = translate(text);
-  return isF() ? t.replace(/(-?\d+(?:\.\d+)?)\s?°C/g, (m, n) => `${Math.round(n * 9 / 5 + 32)} °F`) : t;
+  if (!isF()) return t;
+  // a difference ("warmed by 10°C", "10°C or more below", "at least 3 °C below") is not a temperature
+  const delta = /((?:by|at least|aqueceu|pelo menos)\s)(\d+(?:\.\d+)?)\s?°C|(\d+(?:\.\d+)?)\s?°C(\s(?:or more |ou mais )?(?:below|abaixo))/g;
+  return t.replace(delta, (m, pre, a, b, post) => pre ? `${pre}${Math.round(a * 9 / 5)} °F` : `${Math.round(b * 9 / 5)} °F${post}`)
+    .replace(/(-?\d+(?:\.\d+)?)\s?°C/g, (m, n) => `${Math.round(n * 9 / 5 + 32)} °F`);
 }
 
 function translate(text) {

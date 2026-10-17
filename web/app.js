@@ -72,6 +72,7 @@ function go() {
   if (route.view === "edit" && overview?.role === "viewer") { location.hash = "#/"; return toast("This account can only look", true); }
   if (route.view === "edit") openEditor();
   if (route.view === "overview") renderOverview();
+  if (route.view === "alerts" && typeof aDirty !== "undefined" && !aDirty) loadAlerts();
   if (["prometheus", "grafana", "homarr", "automation"].includes(route.view)) renderIntegration(route.view);
   const title = { overview: "Overview", alerts: "Alerts", prometheus: "Prometheus", grafana: "Grafana", homarr: "Homarr",
                   automation: "Automation", backup: "Backup",
@@ -93,6 +94,8 @@ async function pollOverview() {
     if (overview.version !== pollOverview.version && !dirty && !(typeof aDirty !== "undefined" && aDirty)) return location.reload();
     $("#signout").hidden = !overview.auth;
     document.body.classList.toggle("viewer", overview.role === "viewer");
+    for (const sel of ["#control-body", ".al-grid", "#channels", "#hm-fields"])  // look, not touch, also by keyboard
+      $$(sel).forEach(el => { el.inert = overview.role === "viewer"; });
     $("#version").textContent = /^\d/.test(overview.version) ? "v" + overview.version : overview.version;
     $("#update").hidden = !overview.update;
     if (overview.update) {
@@ -113,7 +116,8 @@ function offline(down) {
   if (!down) lastContact = Date.now();
   document.body.classList.toggle("offline", down);
   $("#offline").hidden = !down;
-  if (down) $("#offline").textContent = `Can't reach Fan Control. Readings below are from ${time(lastContact / 1000)}.`;
+  const text = `Can't reach Fan Control. Readings below are from ${time(lastContact / 1000)}.`;
+  if (down && $("#offline").dataset.en !== text) { $("#offline").textContent = text; $("#offline").dataset.en = text; }
 }
 
 async function pollServer() {
@@ -140,12 +144,12 @@ async function pollServer() {
 // ---------------------------------------------------------------- sidebar
 function renderSide() {
   if (!overview) return;
-  $("#side-servers").innerHTML = overview.servers.map(x => {
+  setHTML($("#side-servers"), overview.servers.map(x => {
     const st = status(x);
     return `<a href="#/server/${encodeURIComponent(x.id)}" aria-current="${route.view === "server" && route.id === x.id}">
       <span class="dot ${st.cls}" aria-hidden="true"></span><span class="nm">${esc(x.name)}</span><span class="sr">, ${esc(translate(st.text))}</span>
       <span class="t">${x.cpu_temp == null ? "" : fmt(tv(x.cpu_temp)) + "°"}</span></a>`;
-  }).join("") || '<p class="side-empty">No servers yet</p>';
+  }).join("") || '<p class="side-empty">No servers yet</p>');
 }
 
 // ---------------------------------------------------------------- overview
@@ -168,8 +172,8 @@ function renderOverview() {
     watts.length ? `${fmt(watts.reduce((a, b) => a + b))} W in total` : "",
     issues ? `${issues} need${issues > 1 ? "" : "s"} attention` : "all fine",
   ].filter(Boolean).map(translate).join(" · ");
-  $("#fleet").innerHTML = list.map(card).join("") +
-    `<a class="card add" href="#/add"><span class="plus">+</span><span>Add a server</span></a>`;
+  setHTML($("#fleet"), list.map(card).join("") +
+    `<a class="card add" href="#/add"><span class="plus">+</span><span>Add a server</span></a>`);
 }
 
 function card(x) {
@@ -237,7 +241,7 @@ function renderServer() {
   $("#mode-now").textContent = (s.dry_run ? "Dry run · " : "") +
     (monitor ? "Monitoring" : auto ? "Automatic" : `${cap(s.settings.mode)} · ${s.applied_speed} %`);
 
-  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(s.reason)}. The BMC is controlling the fans.`]
+  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(translate(s.reason))}. ${translate("The BMC is controlling the fans.")}`]
     : s.following === false ? ["Fans", "Their RPM does not match the speed set: the BMC seems to have taken them back. Fan Control keeps taking them again."]
     : null;
   $("#alert").classList.toggle("show", !!alert);
@@ -253,7 +257,7 @@ function renderServer() {
   $("#v-cpu").innerHTML = unit(tv(s.cpu_temp), tu());
   $("#v-cpu").classList.toggle("hot", s.cpu_temp != null && s.cpu_temp >= fs - 5);
   $("#cpu-name").textContent = cpus.length > 1 ? cpus.map(c => `${c.name.replace("CPU ", "#")} ${fmt(tv(c.value))}°`).join(" · ") : "";
-  $("#s-cpu").textContent = s.cpu_temp == null ? "" : monitor ? (cpus[0]?.name || "") : `${fmt(td(fs - s.cpu_temp))} ${tu()} below failsafe`;
+  $("#s-cpu").textContent = s.cpu_temp == null ? "" : monitor ? (cpus[0]?.name || "") : fs - s.cpu_temp >= 0 ? `${fmt(td(fs - s.cpu_temp))} ${tu()} below failsafe` : `${fmt(td(s.cpu_temp - fs))} ${tu()} over failsafe`;
   $("#v-speed").innerHTML = monitor ? unit(avgPct, "%") : auto ? "Auto" : unit(s.applied_speed, "%");
   $("#s-speed").textContent = monitor ? "set by the BMC" : cap(translate(s.reason));
   $("#lbl-fanavg").textContent = rpms.length ? "Average speed" : "Fans reporting";
@@ -363,7 +367,7 @@ function renderControls() {
     $("#clock-warn").textContent = `These follow the server's clock, now ${server.clock.time} (UTC${off.slice(0, 3)}:${off.slice(3)}). Set TZ in the compose file if that is not your time.`;
   const warn = minSpeedWarning();
   $("#min-warn").hidden = !warn;
-  $("#min-warn").textContent = warn;
+  if ($("#min-warn").dataset.en !== warn) { $("#min-warn").textContent = warn; $("#min-warn").dataset.en = warn; }
   if (document.activeElement !== $("#exhaust-limit")) $("#exhaust-limit").value = draft.exhaust_limit == null ? "" : Math.round(tv(draft.exhaust_limit));
   $("#margin-text").textContent = fmt(td(draft.threshold_margin));
   $$("#bmc-thr button").forEach(b => b.setAttribute("aria-pressed", b.dataset.thr === String(draft.bmc_thresholds)));
@@ -386,7 +390,7 @@ const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satu
 function renderSchedule() {
   const box = $("#sched");
   if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;  // don't redraw under the cursor
-  box.innerHTML = draft.schedule.map((p, i) => `<div class="prof" data-i="${i}">
+  setHTML(box, draft.schedule.map((p, i) => `<div class="prof" data-i="${i}">
       <input class="p-name" data-k="name" value="${esc(p.name)}" maxlength="30" aria-label="Profile name">
       <span class="days">${DAY_NAMES.map((d, n) => `<button type="button" data-day="${n}" aria-pressed="${p.days.includes(n)}" title="${translate(d)}">${translate(d)[0]}</button>`).join("")}</span>
       <input type="time" data-k="start" value="${p.start}" aria-label="Start"> –
@@ -394,7 +398,7 @@ function renderSchedule() {
       <span class="num">max <input type="number" data-k="max_speed" min="0" max="100" value="${p.max_speed ?? ""}" placeholder="—" aria-label="Maximum speed"><span class="muted">%</span></span>
       <span class="num">${translate("target")} <input type="number" data-k="smart_target" value="${p.smart_target == null ? "" : Math.round(tv(p.smart_target))}" placeholder="—" aria-label="Smart target"><span class="muted">${tu()}</span></span>
       <button type="button" class="inline-btn" data-del aria-label="Remove profile">×</button>
-    </div>`).join("") + (draft.schedule.length < 8 ? `<button type="button" class="inline-btn" id="sched-add">${translate("Add a profile")}</button>` : "");
+    </div>`).join("") + (draft.schedule.length < 8 ? `<button type="button" class="inline-btn" id="sched-add">${translate("Add a profile")}</button>` : ""));
 }
 $("#sched").addEventListener("click", e => {
   if (e.target.id === "sched-add") {
@@ -433,7 +437,9 @@ function touch() { dirty = true; renderControls(); }
 // How smart mode is doing, from the readings of the last hours: is it holding the target, and calmly?
 function smartReport() {
   const pts = (server?.history || []).filter(p => p.target != null && p.cpu != null);
-  const hours = pts.length ? (pts.at(-1).t - pts[0].t) / 3600 : 0;
+  // the time in smart mode only: gaps (another mode in between) do not count
+  const gap = 2 * (server.interval || 15);
+  const hours = pts.reduce((h, p, i) => i && p.t - pts[i - 1].t <= gap ? h + (p.t - pts[i - 1].t) / 3600 : h, 0);
   if (pts.length < 20 || hours < 0.25) return "";
   const within = pts.filter(p => Math.abs(p.cpu - p.target) <= 2).length / pts.length;
   const speeds = pts.map(p => p.speed).filter(v => v != null);
@@ -732,7 +738,7 @@ $$("[data-curve]").forEach(b => b.onclick = () => {
   draft.curve = CURVES[b.dataset.curve].map(p => [...p]);
   draft.mode = "curve";
   touch();
-  toast(`${b.textContent} curve loaded. Apply to use it`);
+  toast(`${cap(b.dataset.curve)} curve loaded. Apply to use it`);
 });
 $("#curve-copy").addEventListener("focus", () => {
   const others = (overview?.servers || []).filter(x => x.id !== server?.id && x.control);
@@ -816,7 +822,7 @@ function renderCurve() {
 function renderCurvePoints() {
   const box = $("#curve-points");
   if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
-  box.innerHTML = draft.curve.map((p, i) => `<div class="cp" data-i="${i}">
+  setHTML(box, draft.curve.map((p, i) => `<div class="cp" data-i="${i}">
       <span class="num"><input type="number" data-k="0" value="${Math.round(tv(p[0]))}" min="${Math.round(tv(T_MIN))}" max="${Math.round(tv(T_MAX))}" step="1"
         aria-label="${translate("Point")} ${i + 1}: ${translate("temperature")}"><span class="muted">${tu()}</span></span>
       <span class="arrow" aria-hidden="true">→</span>
@@ -824,7 +830,7 @@ function renderCurvePoints() {
         aria-label="${translate("Point")} ${i + 1}: ${translate("fan speed")}"><span class="muted">%</span></span>
       <button type="button" class="inline-btn" data-del ${draft.curve.length <= 2 ? "disabled" : ""} aria-label="${translate("Remove point")} ${i + 1}">×</button>
     </div>`).join("") +
-    (draft.curve.length < 10 ? `<button type="button" class="inline-btn" id="cp-add">${translate("Add a point")}</button>` : "");
+    (draft.curve.length < 10 ? `<button type="button" class="inline-btn" id="cp-add">${translate("Add a point")}</button>` : ""));
 }
 let focusPoint = null;
 $("#curve-points").addEventListener("change", e => {

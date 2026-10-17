@@ -277,7 +277,8 @@ $("#bk-file").onchange = async e => {
 };
 $("#bk-import").onclick = async () => {
   $("#bk-import").disabled = true;
-  const r = await api("/api/import", { data: backup });
+  const r = await api("/api/import", { data: backup }).catch(() => null);
+  if (!r) { $("#bk-import").disabled = false; return toast("Fan Control did not answer", true); }
   const res = $("#bk-preview");
   if (!r.ok) { res.className = "result bad"; res.textContent = await failure(r); $("#bk-import").disabled = false; return; }
   const d = await r.json();
