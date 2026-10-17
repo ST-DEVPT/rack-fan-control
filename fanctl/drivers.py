@@ -579,7 +579,7 @@ class RedfishDriver(Driver):
         except http.client.HTTPException as e:  # a truncated answer is a failed reading, not a crash
             raise DriverError(f"Redfish {path}: {e!r}") from e
 
-    def _get(self, path):
+    def _get(self, path, method="GET", body=None):
         if self.verify_tls:
             https = urllib.request.HTTPSHandler(context=ssl.create_default_context())
         elif self.pin:
@@ -589,12 +589,14 @@ class RedfishDriver(Driver):
             https = urllib.request.HTTPSHandler(context=ssl._create_unverified_context())  # noqa: S323
         token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         host = f"[{self.host}]" if self.host.count(":") > 1 and not self.host.startswith("[") else self.host
-        req = urllib.request.Request(f"https://{host}{path}", headers={
-            "Authorization": f"Basic {token}", "Accept": "application/json", "OData-Version": "4.0"})
+        req = urllib.request.Request(f"https://{host}{path}", method=method,
+                                     data=None if body is None else json.dumps(body).encode(), headers={
+            "Authorization": f"Basic {token}", "Accept": "application/json", "OData-Version": "4.0",
+            **({"Content-Type": "application/json"} if body is not None else {})})
         opener = urllib.request.build_opener(https, SameOriginRedirect)
         try:
             with opener.open(req, timeout=self.timeout) as r:
-                return json.loads(r.read(5_000_000))
+                return json.loads(r.read(5_000_000) or b"{}")
         except urllib.error.HTTPError as e:
             raise DriverError(f"Redfish {path}: HTTP {e.code} {e.reason}"
                               + (" (check the user name and password)" if e.code == 401 else "")) from e
@@ -604,6 +606,43 @@ class RedfishDriver(Driver):
             if isinstance(getattr(e, "reason", None), CertificateChanged):
                 raise DriverError(str(e.reason)) from e
             raise DriverError(f"Redfish {path}: {getattr(e, 'reason', e)}") from e
+
+    # ---- Dell iDRAC 9 from firmware 3.34 and iDRAC 10: no fan commands, but the iDRAC's own thermal
+    # settings can make it quieter. The iDRAC keeps control, so this is safe by design; it is set once,
+    # not driven. Only the settings this iDRAC lists are shown, and only known values are written.
+    DELL_ATTRIBUTES = "/redfish/v1/Managers/iDRAC.Embedded.1/Attributes"
+    PROFILE = {"ThermalProfile": ("Default Thermal Profile Settings", "Maximum Performance", "Minimum Power"),
+               "FanSpeedOffset": ("Off", "Low", "Medium", "High", "Max"),
+               "ThirdPartyPCIFanResponse": ("Enabled", "Disabled"),
+               "MinimumFanSpeed": None}  # a number between the iDRAC's own limits, or 255 for its default
+
+    def bmc_profile(self):
+        """The iDRAC's thermal settings: {setting: value, "limits": [min, max]}. DriverError when not a Dell."""
+        attrs = self.get(self.DELL_ATTRIBUTES).get("Attributes") or {}
+        out = {k: attrs[f"ThermalSettings.1.{k}"] for k in self.PROFILE if f"ThermalSettings.1.{k}" in attrs}
+        if not out:
+            raise DriverError("this BMC has no Dell thermal settings")
+        lo, hi = attrs.get("ThermalSettings.1.MFSMinimumLimit"), attrs.get("ThermalSettings.1.MFSMaximumLimit")
+        out["limits"] = [lo, hi] if isinstance(lo, int) and isinstance(hi, int) else None
+        return out
+
+    def set_bmc_profile(self, values):
+        current = self.bmc_profile()
+        changes = {}
+        for k, v in (values or {}).items():
+            if k not in self.PROFILE or k not in current:
+                raise ValueError(f"{k} is not a thermal setting this iDRAC has")
+            if k == "MinimumFanSpeed":
+                lo, hi = current["limits"] or (0, 100)
+                if not (type(v) is int and (lo <= v <= hi or v == 255)):
+                    raise ValueError(f"the minimum fan speed must be from {lo} to {hi} %, or 255 for the iDRAC's default")
+            elif v not in self.PROFILE[k]:
+                raise ValueError(f"{k} must be one of: {', '.join(self.PROFILE[k])}")
+            if v != current[k]:
+                changes[f"ThermalSettings.1.{k}"] = v
+        if changes:
+            self._get(self.DELL_ATTRIBUTES, "PATCH", {"Attributes": changes})
+        return changes
 
     def diagnose(self):
         out = {}

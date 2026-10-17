@@ -3,6 +3,16 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.12.0] - 2026-10-17
+
+- **More curves on other sensors**: up to 3 extra curves, each on its own sensor (a GPU, a disk shelf, the exhaust
+  air, a host sensor), next to the main one; the fans run at the highest speed any of them asks for, so an extra
+  curve can only add cooling. Typed as temperature:speed pairs under the main curve.
+- **Dell iDRAC 9 (3.34 and later) and iDRAC 10 over Redfish** (experimental): no fan commands there, but the
+  server page now sets the iDRAC's own thermal settings: thermal profile (Minimum Power is the quiet one), fan
+  speed offset, minimum fan speed within the iDRAC's limits, and the extra cooling for third-party PCIe cards.
+  Only the settings that iDRAC lists are shown and only known values are written; the iDRAC keeps control.
+
 ## [2.11.0] - 2026-10-17
 
 - **Host sensors**: a script on the host sends the temperatures the BMC cannot see, a GPU or the disks, with a

@@ -529,3 +529,32 @@ class ModernRedfish(unittest.TestCase):
         s = d.read()
         self.assertEqual([(t["name"], t["value"], t["cpu"], t["warn"]) for t in s["temps"]], [("CPU1 Temp", 52.0, True, 88.0)])
         self.assertEqual((s["fans"][0]["rpm"], s["watts"], s["power"]), (5400, 230, "on"))
+
+
+class DellThermalSettings(unittest.TestCase):
+    def driver(self):
+        state = {"Attributes": {"ThermalSettings.1.ThermalProfile": "Default Thermal Profile Settings",
+                                "ThermalSettings.1.FanSpeedOffset": "Low", "ThermalSettings.1.MinimumFanSpeed": 255,
+                                "ThermalSettings.1.MFSMinimumLimit": 9, "ThermalSettings.1.MFSMaximumLimit": 100}}
+        sent = []
+
+        class Dell9(drivers.RedfishDriver):
+            def _get(self, path, method="GET", body=None):
+                if method == "PATCH":
+                    sent.append(body)
+                    state["Attributes"].update(body["Attributes"])
+                    return {}
+                return state
+        return Dell9("10.0.0.9", "root", "calvin"), sent
+
+    def test_read_and_write_only_known_values(self):
+        d, sent = self.driver()
+        self.assertEqual(d.bmc_profile()["limits"], [9, 100])
+        self.assertNotIn("ThirdPartyPCIFanResponse", d.bmc_profile())    # not listed by this iDRAC: not offered
+        d.set_bmc_profile({"ThermalProfile": "Minimum Power", "FanSpeedOffset": "Low", "MinimumFanSpeed": 12})
+        self.assertEqual(sent, [{"Attributes": {"ThermalSettings.1.ThermalProfile": "Minimum Power",
+                                                "ThermalSettings.1.MinimumFanSpeed": 12}}])  # unchanged ones not sent
+        for bad in ({"ThermalProfile": "Silent"}, {"MinimumFanSpeed": 5}, {"ThirdPartyPCIFanResponse": "Disabled"},
+                    {"Something": 1}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                d.set_bmc_profile(bad)

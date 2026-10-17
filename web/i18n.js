@@ -116,7 +116,19 @@ const PT = {
   "Download what the BMC answers, without passwords or addresses, for a bug report": "Descarregar o que o BMC responde, sem passwords nem endereços, para reportar um problema",
   "Create a token": "Criar um token", "Create": "Criar", "Token name": "Nome do token", "Revoke": "Revogar",
   "Name, e.g. Homarr": "Nome, p. ex. Homarr", "Name, e.g. Home Assistant": "Nome, p. ex. Home Assistant",
-  "Automation": "Automação", "Host sensors": "Sensores do host", "Name, e.g. GPU host": "Nome, p. ex. host da GPU",
+  "Automation": "Automação", "iDRAC thermal settings": "Definições térmicas do iDRAC", "experimental": "experimental",
+  "This iDRAC has no fan commands, but its own settings can make it quieter. The iDRAC keeps control and all its protection: these are written to it once, not driven.":
+    "Este iDRAC não tem comandos de ventoinhas, mas as suas próprias definições podem torná-lo mais silencioso. O iDRAC mantém o controlo e toda a proteção: são escritas nele uma vez, não comandadas.",
+  "Apply to the iDRAC": "Aplicar no iDRAC", "Thermal profile": "Perfil térmico", "Fan speed offset": "Ajuste da velocidade",
+  "Extra cooling for third-party PCIe cards": "Arrefecimento extra para placas PCIe de terceiros",
+  "Minimum fan speed": "Velocidade mínima das ventoinhas", "empty for the iDRAC's default": "vazio para o valor do iDRAC",
+  "iDRAC thermal settings applied": "Definições térmicas do iDRAC aplicadas",
+  "Cards the iDRAC does not know (HBAs, NICs, GPUs) then rely on the other settings for their cooling. Apply?":
+    "As placas que o iDRAC não conhece (HBAs, placas de rede, GPUs) passam a depender das outras definições para arrefecer. Aplicar?", "Also": "Também", "Sensor of extra curve": "Sensor da curva extra",
+  "Points of extra curve": "Pontos da curva extra", "Remove extra curve": "Remover curva extra",
+  "temperature:speed pairs, e.g. 50:20 85:90": "pares temperatura:velocidade, p. ex. 50:20 85:90",
+  "Add a curve on another sensor": "Juntar uma curva noutro sensor",
+  "Write temperature:speed pairs, e.g. 50:20 85:90": "Escreva pares temperatura:velocidade, p. ex. 50:20 85:90", "Host sensors": "Sensores do host", "Name, e.g. GPU host": "Nome, p. ex. host da GPU",
   "Temperatures the BMC cannot see, a GPU or the disks, sent by a script on the host. They count like any sensor with a warning threshold: smart mode keeps them clear of it, the BMC takes over near it, and the curve can follow one. They never stand in for the CPU, and one that stops arriving hands the fans to the BMC. A sensor token can send them and do nothing else.":
     "Temperaturas que o BMC não vê, uma GPU ou os discos, enviadas por um script no host. Contam como qualquer sensor com limite de aviso: o modo smart mantém-nas longe dele, o BMC assume perto dele e a curva pode seguir uma. Nunca substituem o CPU, e uma que deixe de chegar entrega as ventoinhas ao BMC. Um token de sensores pode enviá-las e mais nada.", "IPMI cipher suite": "Suite de cifra IPMI",
   "Automatic tries ipmitool's default, then 3. Pick 3 when the BMC says \"Unable to establish IPMI v2 / RMCP+ session\"":
@@ -433,6 +445,7 @@ const PT_PATTERNS = [
     "A ventoinha $1 lê 0 e não rodou desde que o Fan Control arrancou: tomada como ranhura vazia"],
   [/^Host sensors now reporting: (.+)$/, "Sensores do host a reportar: $1"],
   [/^Host sensors forgotten( by (.+))?: (.+)$/, (m, by, who, names) => `Sensores do host esquecidos${who ? " por " + who : ""}: ${names}`],
+  [/^iDRAC thermal settings changed by (.+): (.+)$/, "Definições térmicas do iDRAC alteradas por $1: $2"],
   [/^Could not start: (.+)$/, "Não foi possível iniciar: $1"],
   [/^the CPU is at (.+); calibrate when it is 10°C or more below the failsafe$/, "o CPU está a $1; calibre quando estiver pelo menos 10 °C abaixo do failsafe"],
   [/^the failsafe took over \((.+)\)$/, "o failsafe assumiu o controlo ($1)"], [/^the CPU warmed by (.+)$/, "o CPU aqueceu $1"],

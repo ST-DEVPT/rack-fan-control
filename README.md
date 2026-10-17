@@ -111,7 +111,7 @@ a container stop. A watchdog restarts it if it stalls, and a small script on the
 | **Dell PowerEdge (iDRAC)** | iDRAC 6, 7, 8, and iDRAC 9 up to firmware 3.30.30.30 | Yes | IPMI |
 | **Supermicro** | X10, X11 and X12 boards | Yes, experimental | IPMI |
 | **HPE iLO 4, unlocked firmware** | ProLiant Gen8 / Gen9 with the community-patched iLO 4 2.77 | Yes (caps over SSH), experimental | Redfish |
-| **Redfish** | HPE iLO 4 (2.30+), iLO 5, iLO 6, Lenovo XCC, Dell iDRAC 9, most recent BMCs | Monitoring only | Redfish |
+| **Redfish** | HPE iLO 4 (2.30+), iLO 5, iLO 6, Lenovo XCC, Dell iDRAC 9, most recent BMCs | Monitoring only; on Dell iDRAC 9/10, the iDRAC's own thermal settings (experimental) | Redfish |
 | **Other IPMI** | Any BMC with IPMI over LAN | Monitoring only | IPMI |
 | **Demo** | Simulated readings | Yes (simulated) | — |
 
@@ -232,7 +232,7 @@ For servers whose type has fan control (Dell, Supermicro, unlocked iLO 4):
 | --- | --- |
 | **Automatic** | The BMC runs its factory profile. Loudest, and the fallback for every problem |
 | **Fixed** | Every fan at one speed |
-| **Curve** | Speed follows a temperature along points you drag: the hottest CPU, the exhaust air, or any sensor (a GPU, a disk bay). Start from a preset (quiet, balanced, cool, storage) or copy another server's curve. The CPU failsafe applies whichever it follows |
+| **Curve** | Speed follows a temperature along points you drag: the hottest CPU, the exhaust air, or any sensor (a GPU, a disk bay). Up to 3 more curves on other sensors can be added, and the fans run at the highest any of them asks for. Start from a preset (quiet, balanced, cool, storage) or copy another server's curve. The CPU failsafe applies whichever it follows |
 | **Smart** | Holds the CPU at a target you set with as little fan as it can, learning what each load needs, and keeps every other sensor clear of its limits |
 
 ### Smart mode

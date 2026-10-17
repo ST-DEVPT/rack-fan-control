@@ -555,7 +555,7 @@ a.btn.primary { color: var(--bg); }
 body.viewer .ro-badge { display: inline; }
 body.viewer .actions, body.viewer #s-edit, body.viewer .side-add, body.viewer a[href="#/add"],
 body.viewer .card.add, body.viewer .al-actions, body.viewer .curve-presets, body.viewer #test-alert,
-body.viewer #smart-forget, body.viewer #s-diag, body.viewer .calib-actions, body.viewer #sel-clear,
+body.viewer #smart-forget, body.viewer #s-diag, body.viewer .calib-actions, body.viewer #sel-clear, body.viewer #bp-apply,
 body.viewer [data-load] { display: none !important; }
 body.viewer #control-body, body.viewer .alerts .al-grid, body.viewer .detect { pointer-events: none; opacity: .75; }
 
@@ -577,6 +577,9 @@ body.viewer #control-body, body.viewer .alerts .al-grid, body.viewer .detect { p
 .smart-map { max-width: 560px; margin-top: 16px; }
 .csv { display: inline-flex; align-items: center; text-decoration: none; margin-left: 8px; padding: 3px 9px; }
 .calib { margin-top: 14px; }
+.bmc-profile { max-width: 560px; margin-top: 16px; }
+.bmc-profile h3 { font-size: 14px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+.bmc-profile .spacer { flex: 1; }
 .changes, .sel { max-width: 560px; margin-top: 14px; font-size: 13px; }
 .changes summary, .sel summary { cursor: pointer; color: var(--ink-2); }
 .changes table, .sel table { width: 100%; margin-top: 8px; }
@@ -586,6 +589,9 @@ body.viewer #control-body, body.viewer .alerts .al-grid, body.viewer .detect { p
 .min-warn { flex-basis: 100%; color: var(--accent); font-size: 12.5px; }
 .curve-src { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; }
 .curve-src small { flex-basis: 100%; }
+.extra-curves { display: grid; gap: 8px; margin: 0 0 12px; font-size: 13px; }
+.extra-curves .xc { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.extra-curves .xc input { flex: 1 1 180px; min-width: 0; font-family: var(--mono); }
 .handover { max-width: 560px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px;
             padding-top: 14px; border-top: 1px solid var(--rule); font-size: 13px; }
 .calib .help { margin: 0 0 10px; }

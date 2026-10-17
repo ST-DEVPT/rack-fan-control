@@ -113,6 +113,13 @@
     <section>
       <div class="hd"><h2>Control</h2><span class="aside" id="applied"></span></div>
       <div class="monitor-note" id="monitor-note" hidden></div>
+      <div class="bmc-profile" id="bmc-profile" hidden>
+        <h3>iDRAC thermal settings <span class="badge">experimental</span></h3>
+        <p class="help">This iDRAC has no fan commands, but its own settings can make it quieter. The iDRAC keeps
+          control and all its protection: these are written to it once, not driven.</p>
+        <div class="fields" id="bp-fields"></div>
+        <div class="actions"><span class="spacer"></span><button class="btn primary" id="bp-apply">Apply to the iDRAC</button></div>
+      </div>
       <div id="control-body">
       <div class="seg" role="group" aria-label="Mode">
         <button data-mode="auto">Automatic</button><button data-mode="fixed">Fixed</button><button data-mode="curve">Curve</button><button data-mode="smart">Smart</button>
@@ -152,6 +159,7 @@
         <p class="help">Drag the points, or set them below. Points also take the arrow keys (Shift for steps of 5) and Delete.</p>
         <div class="curve-src"><label for="curve-src">Follows</label><select id="curve-src"></select>
           <small class="muted">The CPU failsafe applies whichever sensor the curve follows</small></div>
+        <div class="extra-curves" id="extra-curves"></div>
         <div class="presets curve-presets">
           <span class="muted">Start from</span>
           <button data-curve="quiet" title="Homelab, Xeon E5 class CPUs">Quiet</button>

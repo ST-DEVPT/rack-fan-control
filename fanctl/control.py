@@ -11,6 +11,8 @@ DEFAULT_SETTINGS = {
     "curve": [[30, 10], [45, 15], [55, 25], [65, 45], [72, 70]],
     "curve_source": None,      # what the curve follows: None = the hottest CPU, "exhaust", or a temperature
                                # sensor's name (a GPU, a disk bay); the CPU failsafe applies whichever
+    "extra_curves": [],        # more curves, each on its own sensor ({"source", "curve"}): the fans run at the
+                               # highest speed any curve asks for (a GPU or a disk shelf next to the CPU)
     "failsafe_temp": 75,       # at or above this CPU temp, hand control back to the BMC
     "ramp_down_seconds": 60,   # fans speed up at once, slow down only after this long
     "pcie_cooling": None,      # None = leave untouched, True/False = enforce
@@ -104,7 +106,13 @@ def decide(settings, cpu_temp, was_failsafe=False, sensors=None):
     if temp is None:  # a sensor that was never there; one that stops reporting trips the failsafe in faults()
         return "auto", None, f"the curve's sensor {source} gives no reading", False
     label = "" if source is None else "exhaust air " if source == "exhaust" else f"{source} "
-    return "manual", max(curve_speed(settings["curve"], temp), floor), f"curve at {label}{temp:.0f}°C", False
+    speed, reason = curve_speed(settings["curve"], temp), f"curve at {label}{temp:.0f}°C"
+    for extra in settings.get("extra_curves", []):  # the highest wins: another curve can only add cooling
+        t = curve_input(extra["source"], cpu_temp, sensors)
+        if t is not None and curve_speed(extra["curve"], t) > speed:
+            speed = curve_speed(extra["curve"], t)
+            reason = f"curve at {'exhaust air' if extra['source'] == 'exhaust' else extra['source']} {t:.0f}°C"
+    return "manual", max(speed, floor), reason, False
 
 
 def failed_fans(fans):
@@ -204,6 +212,19 @@ def validate_settings(new, current):
             and 0 <= p[0] <= 110 and 0 <= p[1] <= 100 for p in c)):
         raise ValueError("the curve needs 2 to 10 [temperature, speed] points, speed 0-100")
     s["curve"] = sorted([round(p[0]), round(p[1])] for p in c)
+    extras = s["extra_curves"]
+    if not (isinstance(extras, list) and len(extras) <= 3):
+        raise ValueError("up to 3 extra curves")
+    for e in extras:
+        if not (isinstance(e, dict) and set(e) == {"source", "curve"} and isinstance(e["source"], str)
+                and 1 <= len(e["source"]) <= 60):
+            raise ValueError("each extra curve needs a source sensor and a curve")
+        pts = e["curve"]
+        if not (isinstance(pts, list) and 2 <= len(pts) <= 10 and all(
+                isinstance(p, list) and len(p) == 2 and all(type(x) in (int, float) for x in p)
+                and 0 <= p[0] <= 110 and 0 <= p[1] <= 100 for p in pts)):
+            raise ValueError(f"{e['source']}: the curve needs 2 to 10 [temperature, speed] points, speed 0-100")
+        e["curve"] = sorted([round(p[0]), round(p[1])] for p in pts)
     if s["curve_source"] is not None and not (isinstance(s["curve_source"], str) and 1 <= len(s["curve_source"]) <= 60):
         raise ValueError("curve_source must be empty (the hottest CPU), \"exhaust\" or a sensor name")
     if s["pcie_cooling"] not in (None, True, False):

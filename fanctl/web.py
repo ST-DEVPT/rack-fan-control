@@ -638,6 +638,37 @@ def post_sensors(h):
     return h.send(200, {"ok": True, "stale_after": srv.PUSH_STALE})
 
 
+@route("GET", r"/api/bmc-profile", "viewer")
+def get_bmc_profile(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if not hasattr(srv.driver, "bmc_profile"):
+        return h.send(404, {"error": "only Dell iDRACs read over Redfish have thermal settings here"})
+    try:
+        return h.send(200, srv.driver.bmc_profile())
+    except DriverError as e:
+        return h.send(404, {"error": str(e)})
+
+
+@route("POST", r"/api/bmc-profile", "admin")
+def post_bmc_profile(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if not hasattr(srv.driver, "set_bmc_profile"):
+        return h.send(404, {"error": "only Dell iDRACs read over Redfish have thermal settings here"})
+    try:
+        changes = srv.driver.set_bmc_profile(h.body.get("settings"))
+    except ValueError as e:
+        return h.send(400, {"error": str(e)})
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+    if changes:
+        srv.log(f"iDRAC thermal settings changed by {h.who()}: " + ", ".join(f"{k.split('.')[-1]} {v}" for k, v in changes.items()))
+    return h.send(200, srv.driver.bmc_profile())
+
+
 @route("POST", r"/api/smart/forget", "admin")
 def post_smart_forget(h):
     srv = server_or_404(h)

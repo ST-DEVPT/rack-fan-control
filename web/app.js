@@ -290,6 +290,11 @@ function renderServer() {
     <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}${f.floor ? `<small class="muted" title="${translate("BMC minimum")}"> / ≥${Math.round(f.floor)}</small>` : ""}</td></tr>`;
   }).join("") || '<tr class="empty"><td colspan="3">No readings</td></tr>';
   renderCalib();
+  if (bpFor !== s.id) {  // read once per server: it takes the iDRAC a moment
+    bpFor = s.id;
+    $("#bmc-profile").hidden = true;
+    if (s.driver === "redfish") loadBmcProfile();
+  }
   const handed = s.handed_until > Date.now() / 1000;
   $("#ho-text").textContent = handed ? `The BMC has the fans until ${time(s.handed_until)}.` : "Hand the fans to the BMC for";
   $("#ho-btns").hidden = handed;
@@ -591,6 +596,43 @@ async function fanPower(c) {
   return text;
 }
 
+// Dell iDRAC 9 (3.34+) and iDRAC 10 over Redfish: no fan commands, but the iDRAC's own thermal settings
+const BP_LABELS = { ThermalProfile: "Thermal profile", FanSpeedOffset: "Fan speed offset",
+  ThirdPartyPCIFanResponse: "Extra cooling for third-party PCIe cards", MinimumFanSpeed: "Minimum fan speed" };
+const BP_VALUES = { ThermalProfile: ["Default Thermal Profile Settings", "Maximum Performance", "Minimum Power"],
+  FanSpeedOffset: ["Off", "Low", "Medium", "High", "Max"], ThirdPartyPCIFanResponse: ["Enabled", "Disabled"] };
+let bpFor = null;
+async function loadBmcProfile() {
+  const box = $("#bmc-profile"), id = server.id;
+  const r = await api("/api/bmc-profile?server=" + encodeURIComponent(id)).catch(() => null);
+  if (!r?.ok || server?.id !== id) { box.hidden = true; return; }
+  const p = await r.json();
+  box.hidden = false;
+  $("#bp-fields").innerHTML = Object.keys(BP_LABELS).filter(k => k in p).map(k => `<div class="f">
+      <label for="bp-${k}">${translate(BP_LABELS[k])}${k === "MinimumFanSpeed" && p.limits ? `<small>${p.limits[0]}–${p.limits[1]} %, ${translate("empty for the iDRAC's default")}</small>` : ""}</label>
+      ${k === "MinimumFanSpeed"
+        ? `<div class="num"><input type="number" id="bp-${k}" min="${p.limits?.[0] ?? 0}" max="${p.limits?.[1] ?? 100}" value="${p[k] === 255 ? "" : p[k]}"><span class="muted">%</span></div>`
+        : `<select id="bp-${k}">${[...new Set([...BP_VALUES[k], p[k]])].map(v => `<option${v === p[k] ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>`}
+    </div>`).join("");
+}
+$("#bp-apply").onclick = async () => {
+  const settings = {};
+  for (const k of Object.keys(BP_LABELS)) {
+    const el = $(`#bp-${k}`);
+    if (el) settings[k] = k === "MinimumFanSpeed" ? (el.value === "" ? 255 : +el.value) : el.value;
+  }
+  if (settings.ThirdPartyPCIFanResponse === "Disabled" && !confirm(translate("Cards the iDRAC does not know (HBAs, NICs, GPUs) then rely on the other settings for their cooling. Apply?"))) return;
+  $("#bp-apply").disabled = true;
+  try {
+    const r = await api("/api/bmc-profile?server=" + encodeURIComponent(server.id), { settings });
+    if (!r.ok) return toast(await failure(r), true);
+    toast("iDRAC thermal settings applied");
+    loadBmcProfile();
+  } finally {
+    $("#bp-apply").disabled = false;
+  }
+};
+
 // fan calibration: start it, follow it, and use what it found
 const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
 function renderCalib() {
@@ -785,8 +827,54 @@ function renderCurveSource() {
 }
 $("#curve-src").onchange = e => { draft.curve_source = e.target.value || null; touch(); };
 
+// More curves on other sensors (a GPU, a disk shelf): the fans run at the highest any of them asks for.
+// Points are typed as temperature:speed pairs, in the unit on screen.
+const pointsText = c => c.map(([t, s]) => `${Math.round(tv(t))}:${s}`).join(" ");
+function parsePoints(text) {
+  const pts = text.trim().split(/[\s,;]+/).filter(Boolean).map(p => p.split(":").map(Number));
+  if (pts.length < 2 || pts.length > 10 || pts.some(p => p.length !== 2 || p.some(n => !Number.isFinite(n)) || p[1] < 0 || p[1] > 100)) return null;
+  return pts.map(([t, s]) => [Math.round(fromT(t)), Math.round(s)]).sort((a, b) => a[0] - b[0]);
+}
+function renderExtraCurves() {
+  const box = $("#extra-curves");
+  if (box.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return;
+  const names = [...new Set((server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name))];
+  const extras = draft.extra_curves || [];
+  setHTML(box, extras.map((e, i) => `<div class="xc" data-i="${i}">
+      <span class="muted">${translate("Also")}</span>
+      <select data-k="source" aria-label="${translate("Sensor of extra curve")} ${i + 1}">
+        ${[...new Set(["exhaust", ...names, e.source])].map(n => `<option value="${esc(n)}"${n === e.source ? " selected" : ""}>${esc(n === "exhaust" ? translate("Exhaust air") : n)}</option>`).join("")}
+      </select>
+      <input data-k="curve" value="${esc(pointsText(e.curve))}" spellcheck="false" aria-label="${translate("Points of extra curve")} ${i + 1}" title="${translate("temperature:speed pairs, e.g. 50:20 85:90")}">
+      <button type="button" class="inline-btn" data-xdel aria-label="${translate("Remove extra curve")} ${i + 1}">×</button></div>`).join("") +
+    (extras.length < 3 ? `<div><button type="button" class="inline-btn" id="xc-add">${translate("Add a curve on another sensor")}</button></div>` : ""));
+}
+$("#extra-curves").addEventListener("click", e => {
+  if (e.target.id === "xc-add") {
+    const names = (server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name);
+    draft.extra_curves = [...(draft.extra_curves || []), { source: names.find(n => /gpu|pci|disk|hdd|drive/i.test(n)) || "exhaust", curve: [[40, 20], [60, 50], [75, 100]] }];
+    touch();
+  } else if (e.target.closest("[data-xdel]")) {
+    draft.extra_curves = draft.extra_curves.filter((_, i) => i !== +e.target.closest(".xc").dataset.i);
+    touch();
+  }
+});
+$("#extra-curves").addEventListener("change", e => {
+  const row = e.target.closest(".xc");
+  if (!row) return;
+  const x = draft.extra_curves[+row.dataset.i];
+  if (e.target.dataset.k === "source") x.source = e.target.value;
+  else {
+    const pts = parsePoints(e.target.value);
+    if (!pts) return toast("Write temperature:speed pairs, e.g. 50:20 85:90", true);
+    x.curve = pts;
+  }
+  touch();
+});
+
 function renderCurve() {
   renderCurveSource();
+  renderExtraCurves();
   const pts = [...draft.curve].sort((a, b) => a[0] - b[0]), fs = draft.failsafe_temp;
   let g = `<defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line y2="5" stroke="var(--accent)" stroke-opacity=".25"/></pattern></defs>`;
   for (let v = 0; v <= 100; v += 25) g += `<line class="g" x1="${P.l}" x2="${CW - P.r}" y1="${cy(v)}" y2="${cy(v)}"/><text x="${P.l - 6}" y="${cy(v) + 3.5}" text-anchor="end">${v}</text>`;

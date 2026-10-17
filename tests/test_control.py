@@ -286,3 +286,19 @@ class SmartLimits(unittest.TestCase):
         speed, info = smart_step(memory, learned, s, 72, {"watts": 100, "inlet": 22}, 300, ceiling=25)
         self.assertTrue(info["boost"])
         self.assertLessEqual(speed, 25 + 25)  # one boost step above where it was, not 100 %
+
+
+class ExtraCurves(unittest.TestCase):
+    def test_the_highest_curve_wins(self):
+        sensors = {"temps": [{"name": "host: GPU 0", "value": 80, "cpu": False, "ok": True, "warn": None}], "exhaust": 35}
+        s = validate_settings({"mode": "curve", "curve": [[30, 10], [70, 50]], "min_speed": 10,
+                               "extra_curves": [{"source": "host: GPU 0", "curve": [[50, 20], [85, 90]]}]},
+                              dict(DEFAULT_SETTINGS))
+        self.assertEqual(decide(s, 50, sensors=sensors)[1:3], (80, "curve at host: GPU 0 80°C"))
+        cool = {**sensors, "temps": [dict(sensors["temps"][0], value=40)]}
+        self.assertEqual(decide(s, 50, sensors=cool)[1:3], (30, "curve at 50°C"))   # the CPU's curve is higher
+        self.assertEqual(decide(s, 50, sensors={"temps": []})[1], 30)              # a missing sensor adds nothing
+        for bad in ([{"source": "", "curve": [[1, 2], [3, 4]]}], [{"source": "x", "curve": [[1, 200], [3, 4]]}],
+                    [{"source": "x", "curve": [[1, 2], [3, 4]]}] * 4):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_settings({"extra_curves": bad}, dict(DEFAULT_SETTINGS))
