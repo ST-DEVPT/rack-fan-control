@@ -156,6 +156,7 @@ Servers, fan settings and Discord are configured in the dashboard. The environme
 | `LOG_FORMAT` | text | `json` prints one JSON object per log line (time, level, logger, server, message) for Loki, Graylog and the like |
 | `UPDATE_CHECK` | `true` | Asks GitHub twice a day for the latest release, and shows it in the sidebar when it is newer. `false` turns it off |
 | `TRUST_PROXY` | off | Set to `true` behind a reverse proxy, so sign-in limits and the event log use `X-Forwarded-For` |
+| `ALLOWED_HOSTS` | (none) | Only without `WEB_PASSWORD`: host names the dashboard answers besides addresses, `localhost` and local names (`.lan`, `.local`, no dots), e.g. `fans.example.com`. A guard against DNS rebinding |
 | `TRUSTED_PROXIES` | loopback and Docker networks | Addresses or networks (comma separated) whose `X-Forwarded-For` is believed, e.g. `192.168.1.10` for a proxy on another machine |
 | `PORT` | `8080` | HTTP port inside the container |
 

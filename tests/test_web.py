@@ -666,3 +666,36 @@ class Busy(unittest.TestCase):
             httpd.slots.release()
             httpd.shutdown()
             httpd.server_close()
+
+
+class Hardening(Base):
+    def test_without_a_password_only_local_host_names(self):
+        real, config.WEB_PASSWORD = config.WEB_PASSWORD, ""
+        try:
+            self.assertEqual(self.req("GET", "/api/overview", headers={"Host": "evil.example.com"})[0], 403)  # DNS rebinding
+            for host in ("192.168.1.6:8080", "localhost:8080", "fans", "fans.lan", "[fd00::1]:8080"):
+                self.assertEqual(self.req("GET", "/api/overview", headers={"Host": host})[0], 200, host)
+            config.ALLOWED_HOSTS.add("fan.example.com")
+            self.assertEqual(self.req("GET", "/api/overview", headers={"Host": "fan.example.com"})[0], 200)
+        finally:
+            config.WEB_PASSWORD = real
+            config.ALLOWED_HOSTS.discard("fan.example.com")
+
+    def test_nested_json_is_a_400(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=5)
+        c.request("POST", "/api/login", b"[" * 5000, {"Content-Type": "application/json"})
+        self.assertEqual(c.getresponse().status, 400)
+
+    def test_one_event_log_read_at_a_time(self):
+        lock = web.SEL_LOCKS.setdefault("rack-a", threading.Lock())
+        lock.acquire()
+        try:
+            self.assertEqual(self.get("/api/sel?server=rack-a&fresh=1")[0], 429)
+        finally:
+            lock.release()
+
+    def test_reserved_ids_and_names(self):
+        from fanctl.server import unique_id, validate_server
+        self.assertEqual(unique_id("Test", set()), "test-server")
+        with self.assertRaises(ValueError):
+            validate_server({"driver": "demo", "name": 'x"\n  - platform: command_line'})

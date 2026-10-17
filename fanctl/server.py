@@ -964,8 +964,13 @@ def slug(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "server"
 
 
+RESERVED_IDS = {"test", "scan", "detect"}  # POST /api/servers/<these> are other routes
+
+
 def unique_id(name, taken):
     sid = base = slug(name)
+    if sid in RESERVED_IDS:
+        sid = base = f"{sid}-server"
     n = 2
     while sid in taken:
         sid, n = f"{base}-{n}", n + 1
@@ -1039,6 +1044,8 @@ def validate_server(new, current=None):
     """A server added or edited in the dashboard. On edit, an empty password keeps the stored one."""
     cfg = dict(current or {"source": "dashboard"})
     name = str(new.get("name", cfg.get("name", ""))).strip()
+    if any(ord(c) < 32 or c in '"\\' for c in name):
+        raise ValueError("the name cannot hold quotes, backslashes or control characters")
     if not 1 <= len(name) <= 60:
         raise ValueError("give the server a name of 1 to 60 characters")
     driver = new.get("driver", cfg.get("driver"))

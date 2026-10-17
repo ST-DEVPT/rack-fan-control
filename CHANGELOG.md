@@ -3,6 +3,24 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.6] - 2026-10-17
+
+Security, from an independent review:
+
+- **Without a password, DNS rebinding no longer gives a web page admin access**: the dashboard then only
+  answers addresses, `localhost`, local names and the new `ALLOWED_HOSTS`.
+- **Reading a BMC's event log** is one read at a time per server and kept for a minute: a viewer could crowd
+  the BMC with sessions until the control loop's readings failed.
+- **No connection lives longer than 120 s**, so slow clients cannot hold every request slot.
+- **BMC timeouts no longer put the BMC address and user name in errors** that viewers, widgets and alerts see.
+- **Diagnostics hide the BMC address in every answer and form**, the BMC user, and Dell's service tag.
+- **A Redfish path from the BMC must stay on that host**; scan ranges written as IPv4-mapped IPv6 are refused;
+  alert channels refuse link-local addresses however they are written.
+- **Server names cannot hold quotes or control characters** (they reached a generated Home Assistant snippet);
+  widgets never show a BMC address used as a name.
+- **Deeply nested JSON is a 400**, and a 1 MB backup body is only read from an admin session.
+- Servers named "test", "scan" or "detect" get an id that does not collide with other routes.
+
 ## [2.9.5] - 2026-10-17
 
 From a review of the control loop by independent reviewers:

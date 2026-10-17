@@ -299,14 +299,30 @@ def send_channel(cfg, channel, kind, values, prefix=""):
         body = {"event": kind, "level": level, "title": title, "message": message,
                 "server": values.get("server"), "time": datetime.now(timezone.utc).isoformat(),
                 "values": {k: str(v) for k, v in values.items()}}
-    host = urlsplit(url).hostname or ""
-    if host.startswith("169.254.") or host in ("metadata.google.internal",):
-        raise ValueError("link-local addresses are not alert channels")
+    refuse_link_local(urlsplit(url).hostname or "")
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers=headers)
     # a redirect to another host would carry the token along: refused, as for Redfish
     opener = urllib.request.build_opener(SameOriginRedirect)
     with opener.open(req, timeout=10) as r:
         r.read(65536)
+
+
+def refuse_link_local(host):
+    """Cloud metadata services live at link-local addresses: never an alert channel, whatever form the
+    address takes (a name, a decimal number, an IPv4-mapped IPv6 address)."""
+    import ipaddress
+    import socket
+    if host in ("metadata.google.internal",):
+        raise ValueError("link-local addresses are not alert channels")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return  # not resolvable: the send fails on its own
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if ip.is_link_local or str(ip).startswith("fd00:ec2::"):
+            raise ValueError("link-local addresses are not alert channels")
 
 
 def post_webhook(url, payload, method="POST", attempts=3):

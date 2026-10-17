@@ -70,7 +70,7 @@ function renderAutomation() {
   $("#au-ha").textContent = [
     "rest_command:", "  fans_quiet:", ...cmd("/api/settings", '{"mode": "smart", "smart_target": 68}'),
     "  fans_to_bmc:", ...cmd("/api/handover", '{"minutes": 120}'), "",
-    "sensor:", "  - platform: rest", `    name: "${s.name} CPU"`, `    resource: "${base}/api/overview"`,
+    "sensor:", "  - platform: rest", `    name: ${JSON.stringify(s.name + " CPU")}`, `    resource: "${base}/api/overview"`,
     "    headers:", "      Authorization: !secret fan_control_bearer",
     `    value_template: "{{ (value_json.servers | selectattr('id', 'eq', '${s.id}') | first).cpu_temp }}"`,
     '    unit_of_measurement: "°C"', "    scan_interval: 30", "",

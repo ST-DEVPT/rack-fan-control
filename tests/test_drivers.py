@@ -446,3 +446,23 @@ class Discovery(unittest.TestCase):
         self.assertEqual([f["host"] for f in found], ["10.0.0.1", "10.0.0.2"])
         self.assertEqual((found[0]["vendor"], found[0]["suggested"], found[0]["redfish"]), ("Hp", "redfish", True))
         self.assertEqual((found[1]["suggested"], found[1]["redfish"], found[1]["ipmi"]), ("ipmi", False, True))
+
+
+class Leaks(unittest.TestCase):
+    def test_a_timeout_does_not_carry_the_bmc_address_or_user(self):
+        real = drivers.subprocess.run
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        drivers.subprocess.run = slow
+        try:
+            with self.assertRaises(DriverError) as e:
+                drivers.DellDriver("10.0.0.9", "rootuser", "calvin").ipmi("sdr", "elist", "full")
+        finally:
+            drivers.subprocess.run = real
+        self.assertNotIn("10.0.0.9", str(e.exception))
+        self.assertNotIn("rootuser", str(e.exception))
+
+    def test_scans_stay_private(self):
+        with self.assertRaises(ValueError):
+            drivers.scan_targets("::ffff:8.8.8.0/120")

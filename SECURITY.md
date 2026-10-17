@@ -25,8 +25,12 @@ It is not meant to be exposed to the internet.
   part, so a client that reaches the app directly, or that adds addresses of its own, cannot pick the
   address it is counted under.
 - **Load**: at most 64 requests are handled at once; a flood of slow or idle connections waits its turn
-  and is dropped after 10 s, instead of using up threads and memory. Request bodies are refused before
-  being read when their length is negative, malformed or over the limit.
+  and is dropped after 10 s, instead of using up threads and memory; no connection lives longer than
+  120 s, however slowly it sends. Request bodies are refused before being read when their length is
+  negative, malformed or over the limit. Reading a BMC's event log is one read at a time per server, kept
+  for a minute, so viewers cannot crowd out the control loop's BMC sessions.
+- **Without a password** the dashboard only answers addresses, `localhost`, local names and
+  `ALLOWED_HOSTS`, so a web page cannot rebind its own name to it (DNS rebinding) and act as admin.
 - **Audit**: settings and server changes are written to the event log with the account and address.
 - **CSRF**: state-changing requests must be `application/json` and, when the browser sends an `Origin`,
   it must match `Host` or `X-Forwarded-Host`.
@@ -59,7 +63,8 @@ It is not meant to be exposed to the internet.
   with every Redfish request, and a changed certificate may mean someone in the middle. A replaced
   certificate is accepted from the server's page or by saving the server. Turn on verification per server
   when the BMC has a certificate from a trusted authority. SSH to unlocked iLO 4 pins host keys the same way.
-- **Input**: settings are validated by type and range; request bodies are capped at 10 kB and
+- **Input**: settings are validated by type and range; request bodies are capped at 10 kB (1 MB for a
+  backup import, from an admin session only) and
   connections time out after 30 seconds. Static files come from a fixed allowlist.
 - **Fan safety**: any error, missing or faulty reading, failed fan, ignored command, crash or stall in the
   control loop, and container stop hands the fans back to the BMC's own control. If the container is killed

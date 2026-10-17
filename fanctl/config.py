@@ -14,6 +14,7 @@ VERSION = os.environ.get("APP_VERSION", "dev")
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 VIEW_PASSWORD = os.environ.get("VIEW_PASSWORD", "")   # optional read-only account
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")  # believe X-Forwarded-For...
+ALLOWED_HOSTS = {h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()}
 TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "")  # ...from these addresses/networks (default: loopback, Docker)
 METRICS_TOKEN = os.environ.get("METRICS_TOKEN", "")
 EMBED_TOKEN = os.environ.get("EMBED_TOKEN", "")

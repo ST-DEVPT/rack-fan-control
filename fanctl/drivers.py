@@ -260,8 +260,10 @@ class IPMIDriver(Driver):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                                env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise DriverError(str(e)) from e
+        except subprocess.TimeoutExpired as e:
+            raise DriverError(f"ipmitool {args[0]} timed out after {timeout} s") from e
+        except OSError as e:
+            raise DriverError(f"ipmitool: {e.strerror or e}") from e
         if r.returncode != 0 and not (partial and r.stdout.strip()):
             msg = (r.stderr or r.stdout).strip() or f"ipmitool exit {r.returncode}"
             hint = next((h for code, h in HINTS.items() if code in msg), None)
@@ -657,8 +659,10 @@ class ILO4UnlockedDriver(RedfishDriver):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                env={"PATH": os.environ.get("PATH", ""), "SSHPASS": self.password})
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise DriverError(f"SSH: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise DriverError("SSH: timed out after 30 s") from e
+        except OSError as e:
+            raise DriverError(f"SSH: {e.strerror or e}") from e
         out = (r.stdout + r.stderr).strip()
         if r.returncode != 0 or "invalid command" in out.lower() or "unknown command" in out.lower():
             raise DriverError("SSH: " + (out or f"exit {r.returncode}")
@@ -794,7 +798,8 @@ def suggest(vendor, product, firmware):
     return None, "The BMC did not say who made it."
 
 
-SENSITIVE = re.compile(r"serial|uuid|asset|mac|password|hostname|fqdn|ipv4|ipv6|address|sku|partnumber|location", re.I)
+SENSITIVE = re.compile(r"serial|uuid|asset|mac|password|hostname|fqdn|ipv4|ipv6|address|sku|partnumber|location"
+                       r"|servicetag|nodeid|expressservice", re.I)
 
 
 def redact(obj):
@@ -869,6 +874,8 @@ def scan_targets(cidr):
     is not what this is for."""
     import ipaddress
     net = ipaddress.ip_network(cidr.strip(), strict=False)
+    if net.version == 6 and net.subnet_of(ipaddress.ip_network("::ffff:0:0/96")):
+        raise ValueError("write IPv4 ranges as IPv4, e.g. 192.168.1.0/24")
     if not (net.is_private or net.is_link_local) or net.is_loopback:
         raise ValueError("only private ranges can be scanned, e.g. 192.168.1.0/24")
     if net.num_addresses > SCAN_LIMIT + 2:

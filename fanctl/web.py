@@ -7,6 +7,8 @@ import io
 import json
 import logging
 import re
+import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
@@ -17,7 +19,7 @@ from .alerts import (ALERT_KINDS, CHANNELS, SAMPLE, alert_config, build_payload,
 from .backup import export_config, import_config
 from .config import DATA_DIR, HISTORY_SECONDS, INTERVAL, VERSION, WEB
 from .control import validate_settings
-from .drivers import DRIVERS, DriverError, detect, forget_pin, scan
+from .drivers import DRIVERS, DriverError, bare_host, detect, forget_pin, scan
 from .metrics import metrics
 from .server import SERVERS, registry_lock, save_dashboard_servers, stalled, start, stop, unique_id, validate_server
 from .widgets import WIDGET_FIELDS, homarr_widget, save_widget_fields, widget_fields, widget_view
@@ -68,14 +70,19 @@ def diagnostics(srv):
     with srv.lock:
         state = {k: v for k, v in srv.state.items() if k != "smart_map"}
         events = list(srv.events)[:50]
-    if srv.host:  # "Started: ..., 10.0.0.5, every 15s", "Cannot read the BMC: 10.0.0.5 ..."
-        hide = lambda text: text.replace(srv.host, "<bmc>") if isinstance(text, str) else text  # noqa: E731
-        events = [{**e, "msg": hide(e["msg"])} for e in events]
-        state = {k: hide(v) for k, v in state.items()}
     try:
         raw = srv.driver.diagnose()
     except Exception as e:  # a diagnostics bug must still return what it has
         raw = {"error": repr(e)}
+    if srv.host:  # "Started: ..., 10.0.0.5, every 15s", "Cannot read the BMC: 10.0.0.5 ...", raw answers
+        forms = sorted({srv.host, bare_host(srv.host), srv.cfg.get("username") or srv.host}, key=len, reverse=True)
+
+        def hide(value):
+            text = json.dumps(value)
+            for f in forms:
+                text = text.replace(json.dumps(f)[1:-1], "<bmc>")
+            return json.loads(text)
+        events, state, raw = hide(events), hide(state), hide(raw)
     return {"format": "fan-control-diagnostics", "app": VERSION, "created": int(time.time()),
             "driver": srv.driver.kind, "driver_label": srv.driver.label, "model": srv.driver.model,
             "interval": INTERVAL, "settings": srv.settings(), "state": state, "events": events, "raw": raw}
@@ -543,16 +550,29 @@ def get_settings_history(h):
     return h.send(200, {"changes": srv.changes()[::-1]})
 
 
+SEL_LOCKS, SEL_CACHE = {}, {}  # server id -> lock; -> (when, result)
+
+
 @route("GET", r"/api/sel", "viewer")
 def get_sel(h):
     """The BMC's event log, read when asked: it takes the BMC a few seconds."""
     srv = server_or_404(h)
     if srv is None:
         return None
+    cached = SEL_CACHE.get(srv.id)
+    if cached and time.monotonic() - cached[0] < 60 and "fresh" not in h.query:
+        return h.send(200, cached[1])
+    lock = SEL_LOCKS.setdefault(srv.id, threading.Lock())
+    if not lock.acquire(blocking=False):  # each read opens BMC sessions the control loop needs
+        return h.send(429, {"error": "the event log is being read already; try again in a moment"})
     try:
-        return h.send(200, srv.driver.sel())
+        sel = srv.driver.sel()
     except DriverError as e:
         return h.send(503, {"error": str(e)})
+    finally:
+        lock.release()
+    SEL_CACHE[srv.id] = (time.monotonic(), sel)
+    return h.send(200, sel)
 
 
 @route("POST", r"/api/sel/clear", "admin")
@@ -564,6 +584,7 @@ def post_sel_clear(h):
         srv.driver.clear_sel()
     except DriverError as e:
         return h.send(503, {"error": str(e)})
+    SEL_CACHE.pop(srv.id, None)
     srv.log(f"BMC event log cleared by {h.who()}")
     return h.send(200, {"ok": True})
 
@@ -611,6 +632,23 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "fan-control"
     sys_version = ""
     timeout = 30  # drop clients that open a connection and never finish the request
+    DEADLINE = 120  # s a connection may live at all: a client dripping a byte now and then keeps no slot
+
+    def setup(self):
+        super().setup()
+        self.deadline = threading.Timer(self.DEADLINE, self.cut)
+        self.deadline.daemon = True
+        self.deadline.start()
+
+    def cut(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def finish(self):
+        self.deadline.cancel()
+        super().finish()
 
     def log_message(self, *_):
         pass
@@ -697,7 +735,28 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         self.route, self.query = url.path, parse_qs(url.query)
 
+    def host_allowed(self):
+        """Without a password, a page on any site could rebind its own name to this address and act as
+        admin (DNS rebinding). So the Host must be an address, localhost, a name without dots or under
+        .local/.lan/.home/.internal/.home.arpa, or one listed in ALLOWED_HOSTS. With a password the
+        session cookie, which such a page never has, does the job."""
+        if config.WEB_PASSWORD:
+            return True
+        import ipaddress
+        host = (self.headers.get("Host") or "").lower()
+        name = host[1:].split("]")[0] if host.startswith("[") else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        if host in config.ALLOWED_HOSTS or name in config.ALLOWED_HOSTS or name in ("", "localhost") or "." not in name:
+            return True
+        try:
+            ipaddress.ip_address(name)
+            return True
+        except ValueError:
+            return name.endswith((".local", ".lan", ".home", ".internal", ".home.arpa", ".localhost"))
+
     def dispatch(self, method):
+        if not self.host_allowed():
+            return self.send(403, {"error": "this host name is not allowed without a password: set WEB_PASSWORD, "
+                                            "or add it to ALLOWED_HOSTS"})
         for m, pattern, access, fn in ROUTES:
             match = pattern.match(self.route) if m == method else None
             if not match:
@@ -736,7 +795,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self.send(400, {"error": "bad Content-Length"})
-        if not 0 <= length <= (1_000_000 if self.route == "/api/import" else 10000):  # backups can be large
+        big = self.route == "/api/import" and self.role() == "admin"  # backups can be large; only an admin sends one
+        if not 0 <= length <= (1_000_000 if big else 10000):
             return self.send(413, {"error": "request too large"})
         # read before any refusal: closing a socket with unread data resets the connection, which a
         # reverse proxy reports as 502 instead of passing the refusal on
@@ -752,6 +812,6 @@ class Handler(BaseHTTPRequestHandler):
             self.body = json.loads(raw or b"{}")
             if not isinstance(self.body, dict):
                 raise ValueError("expected a JSON object")
-        except ValueError as e:
-            return self.send(400, {"error": str(e)})
+        except (ValueError, RecursionError) as e:
+            return self.send(400, {"error": str(e)[:200] or "nested too deep"})
         self.dispatch("POST")
