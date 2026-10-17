@@ -3,6 +3,22 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.7] - 2026-10-17
+
+Control quality, from an independent review with simulations:
+
+- **Smart mode under quiet hours no longer boosts to 100 % and drops back to the cap every minute** (about 60
+  times an hour in a simulation): a boost is one step up, lifts the cap for a while and fades slowly.
+- **Fixed and curve modes let a cap give way within 8 °C of the failsafe**, as smart mode does: a cap the load
+  could not live with tripped the failsafe 28 times in 4 hours in a simulation, with two alerts each time.
+- **A smart target closer than 8 °C to the failsafe is aimed 8 °C under it**, as for every other sensor; closer,
+  it boosted every few minutes and never settled.
+- **Smart mode no longer slows the fans while the temperature is above its target**, learns a load only when it
+  held for the whole steady minute, never winds its trim past 100 %, and no longer shows "None cap 100%".
+- **The hardware's floors (Supermicro's 25 %, a fan's BMC minimum) are smart mode's floor too**, so it learns
+  only speeds that were sent; while the fans do not follow it adjusts nothing.
+- **An empty fan bay no longer pushes the minimum speed up to 60 %.**
+
 ## [2.9.6] - 2026-10-17
 
 Security, from an independent review:

@@ -269,3 +269,20 @@ class QuietHours(unittest.TestCase):
         for bad in ({**good, "start": "24:00"}, {**good, "max_speed": 120}, {**good, "extra": 1}, "on"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 validate_settings({"quiet": bad}, dict(DEFAULT_SETTINGS))
+
+
+class SmartLimits(unittest.TestCase):
+    def test_the_cpu_target_keeps_8_degrees_from_the_failsafe(self):
+        from fanctl.control import smart_watch
+        s = {**DEFAULT_SETTINGS, "mode": "smart", "smart_target": 71, "failsafe_temp": 75}
+        self.assertEqual(smart_watch(s, 60, {})[0][2], 67)
+
+    def test_a_boost_under_a_cap_is_a_step_not_full_speed(self):
+        from fanctl.control import smart_step
+        s = {**DEFAULT_SETTINGS, "mode": "smart", "smart_target": 60, "failsafe_temp": 75, "min_speed": 10}
+        memory, learned = {}, {}
+        for t in range(0, 300, 15):  # cool, at the cap
+            smart_step(memory, learned, s, 50, {"watts": 100, "inlet": 22}, t, ceiling=25)
+        speed, info = smart_step(memory, learned, s, 72, {"watts": 100, "inlet": 22}, 300, ceiling=25)
+        self.assertTrue(info["boost"])
+        self.assertLessEqual(speed, 25 + 25)  # one boost step above where it was, not 100 %

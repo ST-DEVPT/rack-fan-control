@@ -501,7 +501,8 @@ class TakingBack(unittest.TestCase):
         write_json(srv.settings_file, {"mode": "smart", "smart_target": 60})
         srv.answers = [reading([("CPU 1", 60, True)])]
         real = server_module.smart_step
-        server_module.smart_step = lambda memory, learned, *a: (learned.__setitem__(5, 30), (30, {"reason": "smart"}))[1]
+        server_module.smart_step = lambda memory, learned, settings, *a: (  # learns unless told it is a dry run
+            None if settings["dry_run"] else learned.__setitem__(5, 30), (30, {"reason": "smart"}))[1]
         try:
             srv.not_following = True
             srv.cycle()

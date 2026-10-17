@@ -293,7 +293,9 @@ def smart_watch(settings, cpu, sensors):
     8 °C below the point where they would trip. Inlet air is left out: no fan speed cools the room."""
     out = []
     if cpu is not None:
-        out.append(("CPU", cpu, settings["smart_target"], settings["failsafe_temp"]))
+        # 8 C clear of the failsafe, like every other sensor: closer, every bump boosts (a profile or an old
+        # file may hold a target up to 3 C under it, which validation still allows)
+        out.append(("CPU", cpu, min(settings["smart_target"], settings["failsafe_temp"] - 8), settings["failsafe_temp"]))
     sensors = sensors or {}
     limit = settings.get("exhaust_limit")
     if limit is not None and sensors.get("exhaust") is not None:
@@ -440,7 +442,7 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
     # learn from the last minute if it was steady; the map takes over from the trim without a jump
     learning = False
     if load is not None and last is not None and not settings.get("dry_run"):
-        seen = steady_speed(memory.get("trail", []), worst, floor, now)
+        seen = steady_speed(memory.get("trail", []) + [(now, last, load, False)], worst, floor, now)
         if seen is not None:
             k = str(round(math.log(load) / math.log(SMART_BIN)))
             old = learned.get(k)
@@ -451,7 +453,10 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
 
     # quiet hours give way gradually as anything nears its trip point: louder fans beat a failsafe
     closest = max(x["fit"] - (x["trip"] - SMART_YIELD) for x in items)
-    ceiling = min(100, ceiling + SMART_YIELD_RATE * max(0, closest)) if ceiling < 100 else 100
+    capped = ceiling = min(100, ceiling + SMART_YIELD_RATE * max(0, closest)) if ceiling < 100 else 100
+    # what a boost lifted the cap by fades at the slow descent's pace, so the speed comes down gently
+    lift = memory["lift"] = max(0.0, memory.get("lift", 0.0) - SMART_DOWN * dt)
+    ceiling = min(100, ceiling + lift)
 
     b, p = base or 0, SMART_KP * e_pred
     raw = b + p + memory["i"]
@@ -466,17 +471,18 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
     if last is None:
         speed = raw
     elif near:
-        speed = max(raw, last + SMART_BOOST)
-        memory["i"] = speed - b - p  # stay up there until the temperature turns
+        speed = min(100, max(min(raw, ceiling), last + SMART_BOOST))  # a step, not a jump to whatever raw says
+        memory["i"] = max(-100, min(100, speed - b - p))  # stay up there until the temperature turns
+        memory["lift"] = max(lift, speed - capped)
     elif abs(raw - last) < SMART_MIN_CHANGE and floor < raw < ceiling:
         speed = last  # don't chase sensor noise one percent at a time
     elif raw > last:
         speed = min(raw, last + SMART_UP)
-    elif now - memory.get("wanted", now) < settings.get("ramp_down_seconds", 60):
-        speed = last  # lower demand must last the ramp-down delay: a burst every minute holds the fans steady
+    elif e_now > SMART_DEADBAND or now - memory.get("wanted", now) < settings.get("ramp_down_seconds", 60):
+        speed = last  # above target, or lower demand not lasted the ramp-down delay yet: hold
     else:
         speed = max(raw, last - (SMART_DOWN_FAR if e_now < -4 else SMART_DOWN) * dt)
-    speed = min(100 if near else ceiling, max(floor, speed))
+    speed = min(ceiling, max(floor, speed))
     if last is None or raw >= speed - SMART_MIN_CHANGE:
         memory["wanted"] = now  # last time the demand reached the speed
     memory.update(last=speed, base=base)
@@ -490,8 +496,8 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
         reason = f"smart: {gov['name']} {gov['value']:.0f}°C, target {gov['target']:.0f}°C"
         if gov["pred"] >= gov["value"] + 1:
             reason += f", rising to {gov['pred']:.0f}°C"
-        if raw > ceiling and speed >= ceiling:
-            reason += f", quiet hours cap {ceiling}%"
+        if ceiling < 100 and raw > ceiling and speed >= ceiling:
+            reason += f", quiet hours cap {ceiling:.0f}%"
     return round(speed), {
         "reason": reason, "sensor": gov["name"], "value": gov["value"], "target": gov["target"],
         "predicted": round(gov["pred"], 1), "trend": round(gov["slope"] * 60, 2),  # °C per minute

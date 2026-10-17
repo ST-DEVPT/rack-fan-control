@@ -443,8 +443,10 @@ class Server:
             if effective == "manual" and settings["mode"] == "smart":
                 with self.lock:  # forget_learned() clears the map from the HTTP thread
                     # while the BMC has the fans, what held the target was not this speed: learn nothing
-                    learned = dict(self.learned) if self.not_following else self.learned
-                    target, smart = smart_step(self.smart, learned, settings, cpu, sensors, now, cap)
+                    # the hardware's floors are smart mode's floor too, or it learns speeds that were never sent
+                    floor = max(settings["min_speed"], getattr(self.driver, "min_speed", 0), self.rpm_floor)
+                    step = {**settings, "min_speed": floor, "dry_run": settings["dry_run"] or self.not_following}
+                    target, smart = smart_step(self.smart, self.learned, step, cpu, sensors, now, cap)
                 smart["reason"] = smart["reason"].replace(", quiet hours cap", f", {cap_name} cap")
                 reason = smart["reason"]
                 if target is None:
@@ -560,6 +562,10 @@ class Server:
                                settings["ramp_down_seconds"])
         if speed > target and not smart:
             reason += f", holding {speed}% for ramp-down"
+        if cap is not None and not smart:
+            # like smart mode, a cap gives way within 8 C of the failsafe: louder fans beat a failsafe every hour
+            cpu = (self.state.get("cpu_temp") if self.state else None) or 0
+            cap = min(100, round(cap + 10 * max(0, cpu - (settings["failsafe_temp"] - 8))))
         if cap is not None and not smart and speed > cap:
             speed = max(cap, settings["min_speed"])
             reason += f", {cap_name} cap {speed}%"
@@ -768,7 +774,8 @@ class Server:
         """A fan under its BMC minimum at the speed last sent: the BMC logs it, lights the amber LED and
         may run every fan at full speed. From then on this server's fans stay 5 % above that speed,
         until Fan Control restarts. Called with self.lock held."""
-        low = next((f for f in fans if f.get("floor") and f["rpm"] is not None and f["rpm"] < f["floor"]), None)
+        low = next((f for f in fans if f.get("floor") and f["rpm"] is not None and f["rpm"] < f["floor"]
+                    and f["name"] in self.spun), None)  # an empty bay reads 0 for ever: not a reason to speed up
         self.floor_strikes = self.floor_strikes + 1 if low else 0  # one odd reading (a fan swapped) is not it
         if low is None or speed is None or speed + 5 <= self.rpm_floor or self.floor_strikes < 2:
             return
