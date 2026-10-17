@@ -64,6 +64,7 @@ class Server:
         self.known_temps = set()   # every temperature sensor seen since the loop started
         self.missing = {}          # known sensor -> readings in a row it has been absent
         self.blind_tried = 0       # last attempt to hand the fans back while the BMC could not be read
+        self.misses = 0            # readings failed in a row (see READ_MISSES)
         self.told_thresholds = False
         self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
         self.retakes = []          # times to take the fans back from the BMC again (see command)
@@ -393,6 +394,8 @@ class Server:
     MISSING_AFTER = 2     # readings in a row a known sensor may be absent before it counts as lost
     IGNORED_RETRY = 600   # s before manual control is tried again on a BMC that ignored it
     BLIND_RETRY = 60      # s between attempts to hand the fans back while the BMC cannot be read
+    READ_MISSES = 2       # readings in a row that must fail before the BMC counts as unreadable: one failed
+                          # reading (a busy iDRAC drops some) made the fans jump and sent two alerts
 
     def cycle(self):
         now = time.time()
@@ -452,6 +455,9 @@ class Server:
             sensors = self.driver.read()
         except DriverError as e:
             self.counters["bmc_errors"] += 1
+            self.misses += 1
+            if self.misses < self.READ_MISSES:
+                return None  # a busy BMC drops a reading now and then: the last decision holds one cycle longer
             with self.lock:
                 if self.state["error"] != str(e):
                     self.log(f"Cannot read the BMC: {e}", "error")
@@ -472,7 +478,7 @@ class Server:
                         except DriverError:
                             pass  # it doesn't answer at all; the error above says so already
             return None
-        self.blind_tried = 0
+        self.blind_tried, self.misses = 0, 0
         self.state["model"] = self.driver.model or self.state["model"]
         if getattr(self.driver, "thresholds", None) == {} and not self.told_thresholds:
             self.told_thresholds = True

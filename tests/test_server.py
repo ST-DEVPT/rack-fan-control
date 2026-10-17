@@ -221,6 +221,17 @@ class FailSafe(unittest.TestCase):
         self.assertEqual((srv.calls, srv.state["effective"]), (["auto"], "auto"))
         self.assertIn("no CPU", srv.state["reason"])
 
+    def test_one_missed_reading_is_not_an_unreachable_bmc(self):
+        from fanctl.drivers import DriverError
+        srv = Scripted("fs-blip")
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.answers = [DriverError("timed out"), reading(self.OK)]
+        srv.cycle()                                   # one dropped reading: nothing said, nothing handed over
+        srv.cycle()
+        self.assertEqual((srv.calls[-1], srv.state["error"], srv.state["effective"]), (30, None, "manual"))
+        self.assertNotIn("Cannot read", " ".join(e["msg"] for e in srv.events))
+
     def test_unreadable_bmc_gets_the_fans_back(self):
         from fanctl.drivers import DriverError
         srv = Scripted("fs-blind")

@@ -279,6 +279,11 @@ what it saw itself): when they do not, the page and the event log say so, the *f
 goes out, `fanctl_fans_following` drops to 0, and it takes them back every 5 minutes until they follow. The
 BMC has them meanwhile, which is safe, so this is no failsafe.
 
+**If the BMC cannot be reached at all**, nothing can hand the fans back: a Dell or Supermicro BMC keeps the
+last manual speed until it is told otherwise. The page and the *BMC unreachable* alert say so at once, so keep
+the minimum speed one the server can live with for a while, and the BMC on a network path that does not
+fail with the one to the host. One failed reading is not enough (a busy BMC drops some): two in a row are.
+
 **If the controller itself stops.** A control loop that stops turning for 3 minutes trips a watchdog:
 every fan goes back to its BMC and the process exits, so Docker's restart policy (`restart:
 unless-stopped`) starts a fresh one. The image's health check reads `/livez`, which follows the control

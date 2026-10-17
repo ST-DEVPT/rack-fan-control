@@ -3,6 +3,15 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.9.3] - 2026-10-17
+
+- **One failed BMC reading no longer hands the fans over and sends two alerts.** A busy iDRAC drops a reading
+  now and then; that made the fans jump to the BMC's control and sent *unreachable* then *recovered*. Two
+  failed readings in a row are needed now (30 s at the default interval); the last decision holds meanwhile.
+- **A dashboard left open across an upgrade reloads itself** (when nothing is unsaved), instead of running
+  the old page against the new server.
+- The README says what no software can cover: a BMC that cannot be reached keeps the last manual speed.
+
 ## [2.9.2] - 2026-10-17
 
 From a review of every way the BMC's real state can drift from what Fan Control believes (the family of #3):

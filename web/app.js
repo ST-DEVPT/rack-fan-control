@@ -87,6 +87,10 @@ async function pollOverview() {
     const r = await api("/api/overview");
     if (r.status === 401) return location.replace("/login");
     overview = await r.json();
+    // a page left open across an upgrade would run the old script against the new server: reload it
+    // once it has nothing unsaved
+    pollOverview.version ??= overview.version;
+    if (overview.version !== pollOverview.version && !dirty && !(typeof aDirty !== "undefined" && aDirty)) return location.reload();
     $("#signout").hidden = !overview.auth;
     document.body.classList.toggle("viewer", overview.role === "viewer");
     $("#version").textContent = /^\d/.test(overview.version) ? "v" + overview.version : overview.version;
