@@ -321,6 +321,9 @@
           <label>User<input id="e-user" spellcheck="false" autocomplete="off"></label>
           <label>Password<input id="e-pass" type="password" autocomplete="new-password"></label>
         </div>
+        <label id="e-cipher-row">IPMI cipher suite<select id="e-cipher"><option value="">Automatic</option>
+          <option value="3">3</option><option value="17">17</option></select>
+          <small>Automatic tries ipmitool's default, then 3. Pick 3 when the BMC says "Unable to establish IPMI v2 / RMCP+ session"</small></label>
         <label class="check" id="e-tls-row"><input type="checkbox" id="e-tls"> Verify the TLS certificate <small>(leave off for the self-signed certificates BMCs ship with)</small></label>
         <div class="result" id="e-result" hidden></div>
         <div class="form-actions">

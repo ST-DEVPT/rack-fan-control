@@ -43,7 +43,7 @@ class Validation(unittest.TestCase):
     def test_rejects(self):
         for bad in ({"name": "", "driver": "dell", "host": "h", "username": "u", "password": "p"},
                     {"name": "x", "driver": "nope", "host": "h", "username": "u", "password": "p"},
-                    {"name": "x", "driver": "dell", "host": "h:623", "username": "u", "password": "p"},
+                    {"name": "x", "driver": "dell", "host": "h:70000", "username": "u", "password": "p"},
                     {"name": "x", "driver": "redfish", "host": "https://h/x", "username": "u", "password": "p"},
                     {"name": "x", "driver": "redfish", "host": "local", "username": "u", "password": "p"},
                     {"name": "x", "driver": "dell", "host": "-oProxyCommand=x", "username": "u", "password": "p"},

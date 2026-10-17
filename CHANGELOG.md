@@ -3,6 +3,17 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.10.0] - 2026-10-17
+
+- **IPMI cipher suite and port**: newer ipmitool asks for cipher suite 17, which some BMCs list but cannot do
+  ("Unable to establish IPMI v2 / RMCP+ session"). Fan Control now tries suite 3 by itself when that happens,
+  and a server's connection settings (or `SERVER_n_IPMI_CIPHER`) can set one. An IPMI address may carry a
+  port, `10.0.0.5:6230`.
+- **Newer Redfish BMCs** that only have `ThermalSubsystem`, `Sensors` and `EnvironmentMetrics` (the older
+  `Thermal` and `Power` are deprecated, and OpenBMC turned them off) are read too.
+- **`rsp=0xd4` on iDRAC 9** from firmware 3.34.34.34 is explained as what it usually is there (fan commands
+  removed, use the Redfish type), not only as a user without Administrator rights.
+
 ## [2.9.9] - 2026-10-17
 
 2.9.8 was not published (a lint check failed); its changes ship here. Plus the dashboard, from an independent

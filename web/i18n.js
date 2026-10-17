@@ -116,7 +116,9 @@ const PT = {
   "Download what the BMC answers, without passwords or addresses, for a bug report": "Descarregar o que o BMC responde, sem passwords nem endereços, para reportar um problema",
   "Create a token": "Criar um token", "Create": "Criar", "Token name": "Nome do token", "Revoke": "Revogar",
   "Name, e.g. Homarr": "Nome, p. ex. Homarr", "Name, e.g. Home Assistant": "Nome, p. ex. Home Assistant",
-  "Automation": "Automação", "Edit server": "Editar servidor", "The BMC is controlling the fans.": "O BMC está a controlar as ventoinhas.",
+  "Automation": "Automação", "IPMI cipher suite": "Suite de cifra IPMI",
+  "Automatic tries ipmitool's default, then 3. Pick 3 when the BMC says \"Unable to establish IPMI v2 / RMCP+ session\"":
+    "O automático tenta a do ipmitool e depois a 3. Escolha 3 quando o BMC diz \"Unable to establish IPMI v2 / RMCP+ session\"", "Edit server": "Editar servidor", "The BMC is controlling the fans.": "O BMC está a controlar as ventoinhas.",
   "the BMC refused the fan command": "o BMC recusou o comando das ventoinhas",
   "Third-party PCIe cooling response enabled": "Resposta de arrefecimento PCIe de terceiros ativada",
   "Third-party PCIe cooling response disabled": "Resposta de arrefecimento PCIe de terceiros desativada",

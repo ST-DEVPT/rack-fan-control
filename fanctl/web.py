@@ -315,7 +315,8 @@ def get_server(h, sid):
         return None
     # the BMC account name is half a credential
     return h.send(200, {**srv.info(), "username": srv.cfg.get("username", ""),
-                        "verify_tls": srv.cfg.get("verify_tls", False), "has_password": bool(srv.cfg.get("password"))})
+                        "verify_tls": srv.cfg.get("verify_tls", False), "ipmi_cipher": srv.cfg.get("ipmi_cipher"),
+                        "has_password": bool(srv.cfg.get("password"))})
 
 
 @route("GET", r"/api/servers/([a-z0-9-]+)/diagnostics", "admin")
@@ -415,6 +416,7 @@ def post_server_test(h):
     except (ValueError, TypeError) as e:
         return h.send(400, {"ok": False, "error": str(e)})
     drv = DRIVERS[cfg["driver"]](cfg["host"], cfg["username"], cfg.get("password", ""), cfg["verify_tls"], str(DATA_DIR))
+    drv.cipher = cfg.get("ipmi_cipher")
     try:
         data = drv.read()
     except DriverError as e:

@@ -34,6 +34,7 @@ async function openEditor() {
     editDriver = editing.driver;
     $("#e-name").value = editing.name; $("#e-host").value = editing.host;
     $("#e-user").value = editing.username; $("#e-tls").checked = editing.verify_tls;
+    $("#e-cipher").value = editing.ipmi_cipher ?? "";
   }
   $("#e-title").textContent = editing ? `Edit ${editing.name}` : "Add a server";
   $("#e-crumb").textContent = editing ? editing.name : "Add server";
@@ -55,6 +56,7 @@ function renderEditor() {
   $("#e-note").className = "note" + (d.experimental ? " warn" : "");
   $("#e-host-row").hidden = $("#e-cred-row").hidden = !d.needs_host;
   $("#e-tls-row").hidden = !["redfish", "ilo4-unlocked"].includes(d.kind);
+  $("#e-cipher-row").hidden = !["dell", "supermicro", "ipmi"].includes(d.kind);
   $("#e-host-help").textContent = HOST_HELP[d.kind] || "";
   $("#e-user").placeholder = { dell: "root", supermicro: "ADMIN", "ilo4-unlocked": "Administrator", redfish: "Administrator" }[d.kind] || "admin";
   $("#e-pass").placeholder = editing?.has_password ? "Saved. Type to change" : "";
@@ -150,7 +152,8 @@ $("#e-tiles").addEventListener("click", e => {
 function editorBody() {
   // an empty name becomes the address (or "Demo server"), never the example in the placeholder
   const b = { driver: editDriver, name: $("#e-name").value.trim() || (editDriver === "demo" ? "Demo server" : $("#e-host").value.trim()),
-              host: $("#e-host").value.trim(), username: $("#e-user").value.trim(), verify_tls: $("#e-tls").checked };
+              host: $("#e-host").value.trim(), username: $("#e-user").value.trim(), verify_tls: $("#e-tls").checked,
+              ipmi_cipher: $("#e-cipher").value === "" ? null : +$("#e-cipher").value };
   if ($("#e-pass").value) b.password = $("#e-pass").value;
   if (editing) b.id = editing.id;
   return b;

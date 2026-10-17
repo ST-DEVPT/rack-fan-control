@@ -31,7 +31,8 @@ HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-F
 # ipmitool completion codes worth explaining instead of just echoing
 HINTS = {
     "rsp=0xc1": "the BMC does not have this command; iDRAC 9 firmware 3.34.34.34 and later removed manual fan control",
-    "rsp=0xd4": "insufficient privilege; the user must be an Administrator",
+    "rsp=0xd4": "insufficient privilege: the user must be an Administrator; on iDRAC 9 from firmware 3.34.34.34 "
+                "an Administrator gets this too, since manual fan control was removed: use the Redfish type",
     "rsp=0xcc": "the BMC rejected the fan selector",
 }
 
@@ -252,18 +253,18 @@ class IPMIDriver(Driver):
     def ipmi(self, *args, timeout=20, partial=False):
         """Run ipmitool. partial: keep what it printed even when it exits with an error, for listings
         where one unreadable sensor fails the whole command after every other line came out."""
-        if self.host == "local":
-            cmd = ["ipmitool", "-I", "open", *args]
-        else:
-            # -E reads the password from IPMI_PASSWORD so it never shows up in `ps`
-            cmd = ["ipmitool", "-I", "lanplus", "-H", self.host, "-U", self.username, "-E", *args]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                               env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
-        except subprocess.TimeoutExpired as e:
-            raise DriverError(f"ipmitool {args[0]} timed out after {timeout} s") from e
-        except OSError as e:
-            raise DriverError(f"ipmitool: {e.strerror or e}") from e
+        r = self.run_ipmitool(args, timeout)
+        if (r.returncode != 0 and self.cipher is None and not self.cipher_tried and self.host != "local"
+                and "RMCP+" in (r.stderr or r.stdout)):
+            # newer ipmitool asks for cipher suite 17, which some BMCs list but cannot do: try 3 once
+            self.cipher_tried, self.cipher = True, 3
+            retry = self.run_ipmitool(args, timeout)
+            if retry.returncode == 0:
+                r = retry
+                self.notice = ("The BMC refused ipmitool's default cipher suite; cipher suite 3 works and is used "
+                               "(set it in the server's connection settings to skip the first try after a restart)")
+            else:
+                self.cipher = None
         if r.returncode != 0 and not (partial and r.stdout.strip()):
             msg = (r.stderr or r.stdout).strip() or f"ipmitool exit {r.returncode}"
             hint = next((h for code, h in HINTS.items() if code in msg), None)
@@ -275,6 +276,27 @@ class IPMIDriver(Driver):
 
     def clear_sel(self):
         self.ipmi("sel", "clear")
+
+    cipher = None         # IPMI cipher suite (-C); None: ipmitool's default, then 3 if that fails
+    cipher_tried = False
+
+    def run_ipmitool(self, args, timeout):
+        if self.host == "local":
+            cmd = ["ipmitool", "-I", "open"]
+        else:
+            # -E reads the password from IPMI_PASSWORD so it never shows up in `ps`
+            cmd = ["ipmitool", "-I", "lanplus", "-H", bare_host(self.host), "-U", self.username, "-E"]
+            if bare_host(self.host) != self.host.strip("[]"):
+                cmd += ["-p", self.host.rsplit(":", 1)[1]]
+            if self.cipher is not None:
+                cmd += ["-C", str(self.cipher)]
+        try:
+            return subprocess.run(cmd + list(args), capture_output=True, text=True, timeout=timeout,
+                                  env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
+        except subprocess.TimeoutExpired as e:
+            raise DriverError(f"ipmitool {args[0]} timed out after {timeout} s") from e
+        except OSError as e:
+            raise DriverError(f"ipmitool: {e.strerror or e}") from e
 
     thresholds = None  # read once: `ipmitool sensor` is slow and thresholds don't change
     thresholds_at = 0  # when they were last tried, to retry a failed read every 10 min
@@ -607,8 +629,51 @@ class RedfishDriver(Driver):
         chassis = self.get("/redfish/v1/Chassis")["Members"][0]["@odata.id"]
         c = self.get(chassis)
         systems = self.get("/redfish/v1/Systems")["Members"][0]["@odata.id"]
+        # Thermal and Power are deprecated: newer BMCs (OpenBMC, iDRAC 10) may only have ThermalSubsystem,
+        # Sensors and EnvironmentMetrics, which are read instead when Thermal is not there
+        modern = not c.get("Thermal") and c.get("ThermalSubsystem")
         self.paths = {"thermal": (c.get("Thermal") or {}).get("@odata.id", chassis.rstrip("/") + "/Thermal"),
-                      "power": (c.get("Power") or {}).get("@odata.id"), "system": systems}
+                      "power": (c.get("Power") or {}).get("@odata.id"), "system": systems,
+                      "subsystem": c["ThermalSubsystem"]["@odata.id"] if modern else None,
+                      "sensors": (c.get("Sensors") or {}).get("@odata.id") if modern else None,
+                      "metrics": (c.get("EnvironmentMetrics") or {}).get("@odata.id") if modern else None}
+
+    def members(self, path):
+        """The members of a collection, expanded in one request where the BMC can, else one by one."""
+        col = self.get(path + "?$expand=.($levels=1)")
+        rows = col.get("Members", [])
+        if rows and set(rows[0]) <= {"@odata.id"}:
+            rows = [self.get(m["@odata.id"]) for m in rows[:64]]
+        return rows
+
+    def thermal_subsystem(self):
+        """ThermalSubsystem fans and Sensors temperatures, in the shape of the older Thermal resource,
+        so one parser reads both."""
+        fans = []
+        for f in self.members(self.paths["subsystem"].rstrip("/") + "/Fans"):
+            speed = f.get("SpeedPercent") or {}
+            rpm, pct = speed.get("SpeedRPM"), speed.get("Reading")
+            if rpm is None and pct is None:
+                continue
+            fans.append({"Name": f.get("Name") or f.get("Id") or "Fan", "Status": f.get("Status") or {},
+                         "Reading": rpm if rpm is not None else pct, "ReadingUnits": "RPM" if rpm is not None else "Percent"})
+        temps = []
+        for s in self.members(self.paths["sensors"]) if self.paths["sensors"] else []:
+            if s.get("ReadingType") != "Temperature" or s.get("Reading") is None:
+                continue
+            limits = s.get("Thresholds") or {}
+            temps.append({"Name": s.get("Name") or s.get("Id"), "ReadingCelsius": s["Reading"],
+                          "PhysicalContext": s.get("PhysicalContext") or "", "Status": s.get("Status") or {},
+                          "UpperThresholdNonCritical": (limits.get("UpperCaution") or {}).get("Reading"),
+                          "UpperThresholdCritical": (limits.get("UpperCritical") or {}).get("Reading")})
+        watts = None
+        if self.paths["metrics"]:
+            try:
+                watts = ((self.get(self.paths["metrics"]).get("PowerWatts") or {}).get("Reading"))
+            except DriverError:
+                pass
+        power = {"PowerControl": [{"PowerConsumedWatts": watts}]} if watts is not None else None
+        return {"Fans": fans, "Temperatures": temps}, power
 
     def read(self):
         if self.paths is None:
@@ -616,9 +681,12 @@ class RedfishDriver(Driver):
                 self.discover()
             except (KeyError, IndexError, TypeError) as e:
                 raise DriverError(f"unexpected Redfish layout: {e!r}") from e
-        thermal = self.get(self.paths["thermal"])
-        power = None
-        if self.paths["power"]:
+        if self.paths.get("subsystem"):
+            thermal, power = self.thermal_subsystem()
+        else:
+            thermal = self.get(self.paths["thermal"])
+            power = None
+        if self.paths["power"] and power is None:
             try:
                 power = self.get(self.paths["power"])
             except DriverError:

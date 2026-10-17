@@ -172,6 +172,7 @@ They show up in the dashboard like the others, but can only be changed in the en
       SERVER_1_HOST: 192.168.1.120       # "local" for IPMI from the server itself
       SERVER_1_USERNAME: root
       SERVER_1_PASSWORD: ${COMPUTE_BMC_PASSWORD}
+      # SERVER_1_IPMI_CIPHER: 3          # IPMI cipher suite, when the BMC refuses ipmitool's default
       SERVER_2_NAME: DL360
       SERVER_2_DRIVER: redfish
       SERVER_2_HOST: 192.168.1.121
@@ -518,8 +519,8 @@ Use **Test connection** (Edit on the server's page) to see the BMC's answer with
 | Message | Meaning |
 | --- | --- |
 | `rsp=0xc1` | The firmware does not have the fan commands (Dell iDRAC 9 3.34.34.34 or later): use the Redfish type |
-| `rsp=0xd4` | The BMC user is not an Administrator |
-| `Unable to establish IPMI v2 / RMCP+ session` | Wrong address or credentials, or IPMI over LAN is off |
+| `rsp=0xd4` | The BMC user is not an Administrator. On iDRAC 9 from firmware 3.34.34.34 an Administrator gets it too: the fan commands were removed, use the Redfish type |
+| `Unable to establish IPMI v2 / RMCP+ session` | Wrong address or credentials, IPMI over LAN is off, or a cipher suite the BMC cannot do: Fan Control tries suite 3 by itself, and the server's settings can fix one. An IPMI port other than 623 goes in the address, `10.0.0.5:6230` |
 | `Redfish ...: HTTP 401` | Wrong user name or password |
 | `Redfish ...: timed out` | The BMC is not reachable on HTTPS from the container |
 | `SSH: ... (is the iLO firmware unlocked?)` | The iLO answered, but does not have the `fan` command: stock firmware |

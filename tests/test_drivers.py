@@ -466,3 +466,66 @@ class Leaks(unittest.TestCase):
     def test_scans_stay_private(self):
         with self.assertRaises(ValueError):
             drivers.scan_targets("::ffff:8.8.8.0/120")
+
+
+class IpmiConnection(unittest.TestCase):
+    def run_with(self, answer, host="10.0.0.9:6230", cipher=None):
+        seen, real = [], drivers.subprocess.run
+
+        def fake(cmd, **kw):
+            seen.append(cmd)
+            return answer(cmd)
+        drivers.subprocess.run = fake
+        try:
+            d = drivers.DellDriver(host, "root", "calvin")
+            d.cipher = cipher
+            out = d.ipmi("chassis", "power", "status")
+        finally:
+            drivers.subprocess.run = real
+        return d, seen, out
+
+    def test_port_and_cipher_reach_ipmitool(self):
+        _, seen, _ = self.run_with(lambda cmd: subprocess.CompletedProcess(cmd, 0, "Chassis Power is on", ""), cipher=17)
+        self.assertEqual(seen[0][:12], ["ipmitool", "-I", "lanplus", "-H", "10.0.0.9", "-U", "root", "-E", "-p", "6230",
+                                         "-C", "17"])
+
+    def test_cipher_3_when_the_default_cannot_open_a_session(self):
+        def bmc(cmd):
+            ok = "-C" in cmd and cmd[cmd.index("-C") + 1] == "3"
+            return subprocess.CompletedProcess(cmd, 0 if ok else 1, "Chassis Power is on" if ok else "",
+                                               "" if ok else "Error: Unable to establish IPMI v2 / RMCP+ session")
+        d, seen, out = self.run_with(bmc, host="10.0.0.9")
+        self.assertEqual((len(seen), d.cipher, out), (2, 3, "Chassis Power is on"))
+        self.assertIn("cipher suite 3", d.notice)
+
+
+class ModernRedfish(unittest.TestCase):
+    """A BMC with ThermalSubsystem, Sensors and EnvironmentMetrics and no Thermal (OpenBMC, newer firmware)."""
+    TREE = {
+        "/redfish/v1/Chassis": {"Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]},
+        "/redfish/v1/Chassis/1": {"ThermalSubsystem": {"@odata.id": "/redfish/v1/Chassis/1/ThermalSubsystem"},
+                                  "Sensors": {"@odata.id": "/redfish/v1/Chassis/1/Sensors"},
+                                  "EnvironmentMetrics": {"@odata.id": "/redfish/v1/Chassis/1/EnvironmentMetrics"}},
+        "/redfish/v1/Systems": {"Members": [{"@odata.id": "/redfish/v1/Systems/1"}]},
+        "/redfish/v1/Systems/1": {"Model": "R760", "PowerState": "On"},
+        "/redfish/v1/Chassis/1/ThermalSubsystem/Fans?$expand=.($levels=1)": {"Members": [{"@odata.id": "/f/1"}]},
+        "/f/1": {"Name": "Fan 1", "SpeedPercent": {"Reading": 30, "SpeedRPM": 5400}, "Status": {"Health": "OK"}},
+        "/redfish/v1/Chassis/1/Sensors?$expand=.($levels=1)": {"Members": [
+            {"Name": "CPU1 Temp", "ReadingType": "Temperature", "Reading": 52, "PhysicalContext": "CPU",
+             "Thresholds": {"UpperCaution": {"Reading": 88}}},
+            {"Name": "PSU1 Power", "ReadingType": "Power", "Reading": 210}]},
+        "/redfish/v1/Chassis/1/EnvironmentMetrics": {"PowerWatts": {"Reading": 230}},
+    }
+
+    def test_read(self):
+        tree = self.TREE
+
+        class Modern(drivers.RedfishDriver):
+            def _get(self, path):
+                if path not in tree:
+                    raise DriverError(f"Redfish {path}: HTTP 404")
+                return tree[path]
+        d = Modern("10.0.0.9", "root", "calvin")
+        s = d.read()
+        self.assertEqual([(t["name"], t["value"], t["cpu"], t["warn"]) for t in s["temps"]], [("CPU1 Temp", 52.0, True, 88.0)])
+        self.assertEqual((s["fans"][0]["rpm"], s["watts"], s["power"]), (5400, 230, "on"))

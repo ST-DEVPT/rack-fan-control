@@ -28,6 +28,7 @@ class Server:
         self.driver = DRIVERS[cfg["driver"]](cfg.get("host", ""), cfg.get("username", ""), cfg.get("password", ""),
                                              cfg.get("verify_tls", False), str(DATA_DIR))
         self.driver.pin = True  # remember the BMC's certificate (see drivers.PinnedHTTPSHandler)
+        self.driver.cipher = cfg.get("ipmi_cipher")
         # the single-server setup of 1.0 keeps its settings file
         self.settings_file = DATA_DIR / ("settings.json" if cfg.get("legacy") else f"settings-{self.id}.json")
         self.history_file = DATA_DIR / f"history-{self.id}.json"
@@ -1006,6 +1007,7 @@ def env_servers(env=os.environ):
                     "username": env.get(f"{prefix}USERNAME", "root"),
                     "password": env.get(f"{prefix}PASSWORD", "calvin"),
                     "verify_tls": env.get(f"{prefix}VERIFY_TLS", "").lower() in ("1", "true", "yes"),
+                    "ipmi_cipher": int(env[f"{prefix}IPMI_CIPHER"]) if env.get(f"{prefix}IPMI_CIPHER", "").isdigit() else None,
                     "source": "environment", "legacy": legacy})
     return out
 
@@ -1063,8 +1065,8 @@ def validate_server(new, current=None):
         m = re.fullmatch(r"(.+?)(?::(\d{1,5}))?", host)
         name_part, port = (m.group(1), m.group(2)) if m and not (host.count(":") > 1 and not host.startswith("[")) else (host, None)
         redfish = issubclass(DRIVERS[driver], RedfishDriver)
-        if not HOST_RE.fullmatch(name_part) or (port and (not redfish or not 0 < int(port) < 65536)):
-            raise ValueError("the address must be a host name or IP" + (", optionally with :port" if redfish else ""))
+        if not HOST_RE.fullmatch(name_part) or (port and not 0 < int(port) < 65536):
+            raise ValueError("the address must be a host name or IP, optionally with :port")
         if host == "local" and redfish:
             raise ValueError("local access only works for IPMI servers")
     else:
@@ -1082,7 +1084,12 @@ def validate_server(new, current=None):
     verify = new.get("verify_tls", cfg.get("verify_tls", False))
     if type(verify) is not bool:
         raise ValueError("verify_tls must be true or false")
-    cfg.update(name=name, driver=driver, host=host, username=username, verify_tls=verify)
+    cipher = new.get("ipmi_cipher", cfg.get("ipmi_cipher"))
+    if cipher in ("", None):
+        cipher = None
+    elif not (type(cipher) is int and 0 <= cipher <= 17):
+        raise ValueError("the IPMI cipher suite is a number from 0 to 17, or empty for automatic")
+    cfg.update(name=name, driver=driver, host=host, username=username, verify_tls=verify, ipmi_cipher=cipher)
     return cfg
 
 
