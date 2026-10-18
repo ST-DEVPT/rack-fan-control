@@ -30,7 +30,7 @@ async function openEditor() {
     const r = await api("/api/servers/" + encodeURIComponent(route.id));
     if (!r.ok) { toast("That server no longer exists", true); location.hash = "#/"; return; }
     editing = await r.json();
-    if (editing.source === "environment") { toast("This server is defined in the environment; change it there", true); location.hash = "#/server/" + editing.id; return; }
+
     editDriver = editing.driver;
     $("#e-name").value = editing.name; $("#e-host").value = editing.host;
     $("#e-user").value = editing.username; $("#e-tls").checked = editing.verify_tls;
@@ -40,7 +40,12 @@ async function openEditor() {
   $("#e-crumb").textContent = editing ? editing.name : "Add server";
   $("#e-lede").textContent = editing ? "Change how to reach the management controller. Leave the password empty to keep the saved one."
     : "Choose what you have, enter how to reach its management controller, and test the connection.";
-  $("#e-delete").hidden = !editing;
+  $("#e-delete").hidden = !editing || editing.source === "environment";
+  $("#e-delete").textContent = translate(editing?.source === "override" ? "Reset to the compose file" : "Remove server");
+  $("#e-compose").hidden = !["environment", "override"].includes(editing?.source);
+  $("#e-compose").textContent = editing?.source === "override"
+    ? "Declared in the compose file and edited here: these settings are used instead of the compose file's. Reset goes back to them."
+    : "Declared in the compose file. Saving here keeps the change in the dashboard, used instead of the compose file's values until you reset it.";
   $("#d-form").hidden = $("#sc-form").hidden = !!editing;
   if (editing) $("#sc-results").hidden = true;
   $("#e-cancel").href = editing ? "#/server/" + encodeURIComponent(editing.id) : "#/";
@@ -200,7 +205,15 @@ $("#e-form").onsubmit = async e => {
 };
 
 $("#e-delete").onclick = async () => {
-  if (!confirm(`Remove ${editing.name}? Its fans go back to automatic control, and its settings and history are deleted.`)) return;
+  if (editing.source === "override") {  // not a removal: back to the compose file's connection settings
+    if (!confirm(translate("Go back to the compose file's connection settings for this server?"))) return;
+    const r = await api("/api/servers/" + encodeURIComponent(editing.id) + "/delete", {});
+    if (!r.ok) return toast(await failure(r), true);
+    toast("Back to the compose file's settings");
+    location.hash = "#/server/" + encodeURIComponent(editing.id);
+    return;
+  }
+  if (!confirm(translate(`Remove ${editing.name}? Its fans go back to automatic control, and its settings and history are deleted.`))) return;
   const r = await api("/api/servers/" + encodeURIComponent(editing.id) + "/delete", {});
   if (!r.ok) return toast(await failure(r), true);
   toast(`${editing.name} removed`);

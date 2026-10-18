@@ -38,17 +38,22 @@ ALERT_KINDS = {
     "inlet_hot":        ("warn",  "{server}: room running hot",    "Inlet air at {inlet}°C, above {inlet_threshold}°C. No fan speed cools the room."),
     "settings_changed": ("info",  "{server}: settings changed",    "Mode {mode}, failsafe {failsafe}°C."),
     "started":          ("info",  "{server}: controller started",  "Watching {host} every {interval} s."),
+    "calibration":      ("info",  "{server}: fan calibration {status}", "{result}"),
+    "handover":         ("info",  "{server}: fans {handover}",     "{detail}"),
     "report":           ("info",  "{server}: status",              "{model} · last {period}"),
 }
 REPORT_PLACEHOLDERS = ("period", "cpu_min", "cpu_avg", "cpu_max", "speed_avg", "power_avg", "dell_pct")
 PLACEHOLDERS = ("server", "host", "model", "cpu", "speed", "mode", "reason", "error", "failsafe", "threshold", "interval", "time",
-                "inlet", "inlet_threshold", "minutes", "fan", "rpm")
+                "inlet", "inlet_threshold", "minutes", "fan", "rpm", "exhaust", "watts", "rpm_now", "status", "result",
+                "handover", "detail")
 SAMPLE = {"server": "Rack A", "host": "192.168.1.120", "model": "PowerEdge R730", "cpu": "71", "speed": "45%",
           "mode": "curve", "reason": "curve at 71°C", "error": "Unable to establish IPMI v2 / RMCP+ session",
           "failsafe": "75", "threshold": "68", "interval": "15", "time": "12:00:00",
           "inlet": "36", "inlet_threshold": "35", "minutes": "10", "fan": "Fan3", "rpm": "0 rpm",
           "period": "1 h", "cpu_min": "48", "cpu_avg": "55", "cpu_max": "71", "speed_avg": "24%",
-          "power_avg": "152", "dell_pct": "0"}
+          "power_avg": "152", "dell_pct": "0", "exhaust": "48", "watts": "182", "rpm_now": "6,120",
+          "status": "finished", "result": "Suggested minimum speed 15%: below 15% the fans turn no slower.",
+          "handover": "handed to the BMC", "detail": "Until 14:00, by admin."}
 
 ALERT_DEFAULTS = {
     "enabled": True,
@@ -56,6 +61,7 @@ ALERT_DEFAULTS = {
     "username": "Fan Control",
     "avatar_url": "",
     "footer": "Fan Control",
+    "dashboard_url": "",     # e.g. https://fans.example.com: each alert then links to its server's page
     "details": True,         # add CPU / fans / mode fields under the message
     "mention": "",           # "", "here", "everyone", "role:<id>", "user:<id>"
     "mention_levels": ["error"],
@@ -66,7 +72,8 @@ ALERT_DEFAULTS = {
     "report_minutes": 60,    # status report period
     "report_mode": "edit",   # "edit": keep one message up to date; "post": a new message each time
     "colors": {"error": "#c0301c", "warn": "#e4501b", "ok": "#3b7a39", "info": "#4f4d48"},
-    "events": {k: {"enabled": k not in ("hot", "settings_changed", "started", "report"), "title": t, "message": m}
+    "events": {k: {"enabled": k not in ("hot", "settings_changed", "started", "report", "calibration", "handover"),
+                   "title": t, "message": m}
                for k, (_, t, m) in ALERT_KINDS.items()},
     # ntfy: the topic URL (https://ntfy.sh/my-topic) and an optional access token; Gotify: the server
     # URL and an application token; webhook: any URL, which receives the alert as JSON
@@ -142,6 +149,11 @@ def validate_alerts(new, current):
             if key == "username" and ("discord" in v.lower() or not v):
                 raise ValueError("bot name cannot be empty or contain \"discord\" (Discord rejects it)")
             cfg[key] = v
+    if "dashboard_url" in new:
+        v = str(new["dashboard_url"]).strip().rstrip("/")
+        if v and not re.fullmatch(r"https?://[^\s\"<>#?]{1,200}", v):
+            raise ValueError("the dashboard address must be an http:// or https:// URL, e.g. https://fans.example.com")
+        cfg["dashboard_url"] = v
     if "avatar_url" in new:
         v = str(new["avatar_url"]).strip()
         if v and not re.fullmatch(r"https://[^\s\"<>]{1,500}", v):
@@ -235,17 +247,51 @@ def fill(template, values):
     return re.sub(r"\{(\w+)\}", lambda m: str(values.get(m.group(1), m.group(0))), template)
 
 
+LEVEL_ICONS = {"error": "🔴", "warn": "🟠", "ok": "🟢", "info": "🔵"}
+
+
+def known(v):
+    return v not in (None, "", "—")
+
+
+def detail_fields(values):
+    """What is worth a glance under an alert, as (name, value) pairs: only what is known."""
+    out = []
+    if known(values.get("cpu")):
+        out.append(("CPU", f"**{values['cpu']}°C**" + (f" · failsafe {values['failsafe']}°C" if known(values.get("failsafe")) else "")))
+    fans = values.get("speed") or "—"
+    if known(values.get("rpm_now")):
+        fans += f" · {values['rpm_now']} rpm"
+    out.append(("Fans", fans))
+    out.append(("Mode", values.get("mode") or "—"))
+    if known(values.get("inlet")) or known(values.get("exhaust")):
+        out.append(("Air", f"in {values.get('inlet') or '—'}°C · out {values.get('exhaust') or '—'}°C"))
+    if known(values.get("watts")):
+        out.append(("Power", f"{values['watts']} W"))
+    return out
+
+
+def server_link(cfg, values):
+    sid = values.get("server_id")
+    return f"{cfg['dashboard_url']}/#/server/{sid}" if cfg.get("dashboard_url") and sid else None
+
+
 def build_payload(cfg, kind, values):
     level = ALERT_KINDS[kind][0]
     ev = cfg["events"][kind]
     embed = {"title": fill(ev["title"], values)[:256], "description": fill(ev["message"], values)[:4000],
-             "color": int(cfg["colors"][level][1:], 16), "timestamp": datetime.now(timezone.utc).isoformat()}
+             "color": int(cfg["colors"][level][1:], 16), "timestamp": datetime.now(timezone.utc).isoformat(),
+             # who, at a glance: the server and its model, with the level's colour as an icon
+             "author": {"name": f"{LEVEL_ICONS[level]} {values.get('server', '')} · {values.get('model', '')}".strip(" ·")[:256]}}
+    link = server_link(cfg, values)
+    if link:
+        embed["url"] = link
     if cfg["footer"]:
         embed["footer"] = {"text": fill(cfg["footer"], values)[:2048]}
     if cfg["details"]:
-        embed["fields"] = [{"name": n, "value": str(values.get(k) or "—")[:1024], "inline": True}
-                           for n, k in (("CPU", "cpu"), ("Fans", "speed"), ("Mode", "mode"))]
-        embed["fields"][0]["value"] += "°C" if values.get("cpu") not in (None, "", "—") else ""
+        embed["fields"] = [{"name": n, "value": str(v)[:1024], "inline": True} for n, v in detail_fields(values)]
+        if kind in ("failsafe", "ignored", "refused", "hot") and known(values.get("reason")):
+            embed["fields"].append({"name": "Why", "value": str(values["reason"])[:1024], "inline": False})
     payload = {"username": cfg["username"], "embeds": [embed],
                "allowed_mentions": {"parse": []}}  # text from the BMC can never ping anyone
     m = cfg["mention"]
@@ -265,9 +311,10 @@ def plain(cfg, kind, values):
     level, ev = ALERT_KINDS[kind][0], cfg["events"][kind]
     message = fill(ev["message"], values)[:4000]
     if cfg["details"]:
-        cpu = values.get("cpu")
-        message += f"\nCPU {cpu}°C · fans {values.get('speed') or '—'} · mode {values.get('mode') or '—'}" if cpu not in (None, "", "—") \
-            else f"\nFans {values.get('speed') or '—'} · mode {values.get('mode') or '—'}"
+        message += "\n" + " · ".join(f"{n} {v}".replace("**", "") for n, v in detail_fields(values))
+    link = server_link(cfg, values)
+    if link:
+        message += f"\n{link}"
     return level, fill(ev["title"], values)[:250], message
 
 
@@ -401,10 +448,15 @@ def build_report(cfg, servers):
     embeds = []
     for server in list(servers.values())[:10]:  # Discord allows 10 embeds per message
         v, series, events = report_values(server, cfg["report_minutes"])
-        state = "🔴 BMC error" if v["error"] else "🟠 failsafe" if server.state["failsafe"] else "🟢 ok"
+        st = server.state
+        state = ("🔴 BMC error" if v["error"] else "🟠 failsafe" if st["failsafe"]
+                 else "🟡 fans not following" if st.get("following") is False
+                 else "🔵 handed to the BMC" if getattr(server, "handed_until", None)
+                 else "🔵 calibrating" if getattr(server, "calibrating", lambda: False)() else "🟢 ok")
         fields = [
             {"name": "CPU", "value": f"**{v['cpu']}°C** now\n{v['cpu_min']}–{v['cpu_max']}°C · avg {v['cpu_avg']}°C", "inline": True},
-            {"name": "Fans", "value": (f"**{v['speed']}**\navg {v['speed_avg']} · automatic {v['dell_pct']}% of the time"
+            {"name": "Fans", "value": (f"**{v['speed']}** · {rpm_text((st['sensors'] or {}).get('fans', []))} rpm\n"
+                                       f"avg {v['speed_avg']} · automatic {v['dell_pct']}% of the time"
                                        if server.control else f"**{v['fan_now']}** (set by the BMC)"), "inline": True},
             {"name": "Power", "value": f"**{v['watts']} W** now\navg {v['power_avg']} W", "inline": True},
             {"name": "Air", "value": f"in {v['inlet']}°C · out {v['exhaust']}°C", "inline": True},
@@ -422,6 +474,9 @@ def build_report(cfg, servers):
         embed = {"title": fill(ev["title"], v)[:256], "description": fill(ev["message"], v)[:4000],
                  "color": int(cfg["colors"]["error" if v["error"] else "warn" if server.state["failsafe"] else "info"][1:], 16),
                  "fields": fields, "timestamp": datetime.now(timezone.utc).isoformat()}
+        link = server_link(cfg, {"server_id": server.id})
+        if link:
+            embed["url"] = link
         if cfg["footer"]:
             embed["footer"] = {"text": fill(cfg["footer"], v)[:2048]}
         embeds.append(embed)
@@ -472,6 +527,11 @@ def reporter(servers):
             log.exception("status report error: %r", e)
 
 
+def rpm_text(fans):
+    rpms = [f["rpm"] for f in fans if f.get("rpm") is not None]
+    return f"{round(sum(rpms) / len(rpms)):,}" if rpms else "—"
+
+
 def notify(server, kind, **values):
     """Send one alert in the background, so a slow Discord never delays the fans."""
     cfg = alert_config()
@@ -490,7 +550,10 @@ def notify(server, kind, **values):
             "mode": s["mode"], "reason": st["reason"], "error": st["error"] or "",
             "failsafe": s["failsafe_temp"], "threshold": cfg["hot_threshold"], "interval": INTERVAL,
             "time": time.strftime("%H:%M:%S"), "inlet_threshold": cfg["inlet_threshold"],
-            "inlet": "—" if (st["sensors"] or {}).get("inlet") is None else f"{st['sensors']['inlet']:.0f}"}
+            "inlet": "—" if (st["sensors"] or {}).get("inlet") is None else f"{st['sensors']['inlet']:.0f}",
+            "exhaust": "—" if (st["sensors"] or {}).get("exhaust") is None else f"{st['sensors']['exhaust']:.0f}",
+            "watts": "—" if (st["sensors"] or {}).get("watts") is None else f"{st['sensors']['watts']:.0f}",
+            "rpm_now": rpm_text((st["sensors"] or {}).get("fans", [])), "server_id": server.id}
     values = {**base, **values}
 
     def send():

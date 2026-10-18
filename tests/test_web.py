@@ -514,7 +514,14 @@ class HTTP(Base):
         st, _, data = self.get("/api/servers/lab-box")
         self.assertTrue(json.loads(data)["has_password"])
         self.assertNotIn("s3cret", data.decode())
-        self.assertEqual(self.post("/api/servers/rack-a", {"name": "x"})[0], 409)  # environment servers are read-only
+        # a compose server: edited here, kept as an override, reset back; never removed from here
+        st, _, data = self.post("/api/servers/rack-a", {"name": "Rack A edited", "driver": "demo"})
+        self.assertEqual((st, json.loads(data)["source"], SERVERS["rack-a"].name), (200, "override", "Rack A edited"))
+        row = next(r for r in json.loads(server.SERVERS_FILE.read_text()) if r["id"] == "rack-a")
+        self.assertTrue(row["overrides"])
+        st, _, data = self.post("/api/servers/rack-a/delete")
+        self.assertEqual((st, json.loads(data)["source"], SERVERS["rack-a"].name), (200, "environment", "Rack A"))
+        self.assertEqual(self.post("/api/servers/rack-a/delete")[0], 409)
         self.assertEqual(self.post("/api/servers/lab-box/delete")[0], 200)
         self.assertNotIn("lab-box", SERVERS)
         self.assertEqual(self.post("/api/servers/lab-box-2/delete")[0], 200)

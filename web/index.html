@@ -295,6 +295,7 @@
     <div>
       <div class="crumbs"><a href="#/">Overview</a> / <span id="e-crumb">Add server</span></div>
       <h1 id="e-title">Add a server</h1>
+      <p class="note" id="e-compose" hidden></p>
       <p class="lede" id="e-lede">Choose what you have, enter how to reach its management controller, and test the connection.</p>
     </div>
   </header>
@@ -617,6 +618,10 @@
           <div><label for="al-footer">Footer</label><input id="al-footer" maxlength="200"></div>
         </div>
         <div class="fld">
+          <label for="al-dashboard">Dashboard address <small>(optional) each alert then links to its server's page</small></label>
+          <input id="al-dashboard" placeholder="https://fans.example.com" spellcheck="false">
+        </div>
+        <div class="fld">
           <label for="al-avatar">Avatar image URL</label>
           <input id="al-avatar" placeholder="https://…/avatar.png" spellcheck="false">
         </div>
@@ -624,7 +629,7 @@
           <label>Colours</label>
           <div class="colors" id="al-colors"></div>
         </div>
-        <label class="check"><input type="checkbox" id="al-details"> Add CPU, fans and mode under each message</label>
+        <label class="check"><input type="checkbox" id="al-details"> Add CPU, fans, mode, air and power under each message</label>
         <h3>Behaviour</h3>
         <div class="fld two">
           <div>

@@ -116,7 +116,15 @@ const PT = {
   "Download what the BMC answers, without passwords or addresses, for a bug report": "Descarregar o que o BMC responde, sem passwords nem endereços, para reportar um problema",
   "Create a token": "Criar um token", "Create": "Criar", "Token name": "Nome do token", "Revoke": "Revogar",
   "Name, e.g. Homarr": "Nome, p. ex. Homarr", "Name, e.g. Home Assistant": "Nome, p. ex. Home Assistant",
-  "Automation": "Automação", "iDRAC thermal settings": "Definições térmicas do iDRAC", "experimental": "experimental",
+  "Automation": "Automação", "Air": "Ar", "Why": "Porquê", "Fan calibration": "Calibração das ventoinhas", "Handed to the BMC": "Entregue ao BMC",
+  "Dashboard address": "Endereço do painel", "(optional) each alert then links to its server's page": "(opcional) cada alerta passa a ligar à página do servidor",
+  "Add CPU, fans, mode, air and power under each message": "Juntar CPU, ventoinhas, modo, ar e consumo a cada mensagem", "Reset to the compose file": "Repor o do ficheiro compose",
+  "Go back to the compose file's connection settings for this server?": "Voltar às definições de ligação do ficheiro compose para este servidor?",
+  "Back to the compose file's settings": "De volta às definições do ficheiro compose",
+  "Declared in the compose file and edited here: these settings are used instead of the compose file's. Reset goes back to them.":
+    "Declarado no ficheiro compose e editado aqui: estas definições são usadas em vez das do compose. Repor volta a elas.",
+  "Declared in the compose file. Saving here keeps the change in the dashboard, used instead of the compose file's values until you reset it.":
+    "Declarado no ficheiro compose. Guardar aqui mantém a alteração no painel, usada em vez dos valores do compose até a repor.", "iDRAC thermal settings": "Definições térmicas do iDRAC", "experimental": "experimental",
   "This iDRAC has no fan commands, but its own settings can make it quieter. The iDRAC keeps control and all its protection: these are written to it once, not driven.":
     "Este iDRAC não tem comandos de ventoinhas, mas as suas próprias definições podem torná-lo mais silencioso. O iDRAC mantém o controlo e toda a proteção: são escritas nele uma vez, não comandadas.",
   "Apply to the iDRAC": "Aplicar no iDRAC", "Thermal profile": "Perfil térmico", "Fan speed offset": "Ajuste da velocidade",
@@ -284,7 +292,7 @@ const PT = {
   // Discord
   "Alerts when something needs you, and a status card that keeps itself up to date.": "Alertas quando algo precisa de si, e um cartão de estado que se mantém atualizado.",
   "Alerts on": "Alertas ligados", "Webhook URL": "URL do webhook", "Look": "Aspeto", "Bot name": "Nome do bot", "Footer": "Rodapé",
-  "Avatar image URL": "URL da imagem do avatar", "Colours": "Cores", "Add CPU, fans and mode under each message": "Acrescentar CPU, ventoinhas e modo a cada mensagem",
+  "Avatar image URL": "URL da imagem do avatar", "Colours": "Cores",
   "Behaviour": "Comportamento", "Mention": "Mencionar", "Nobody": "Ninguém", "A role…": "Um cargo…", "A user…": "Um utilizador…",
   "Role or user ID": "ID do cargo ou utilizador", "Mention on": "Mencionar em", "Cooldown per alert": "Intervalo entre alertas",
   "\"Running hot\" at": "\"A aquecer\" a partir de", "Title": "Título", "Message": "Mensagem", "Reset this event's text": "Repor o texto deste evento",

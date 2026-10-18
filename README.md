@@ -181,7 +181,9 @@ Servers, fan settings and Discord are configured in the dashboard. The environme
 ### Servers in the environment
 
 Servers can also be declared in `docker-compose.yml`, for example to keep credentials in a `.env` file.
-They show up in the dashboard like the others, but can only be changed in the environment:
+They show up in the dashboard like the others. They can be edited there too: the change is kept in the
+dashboard and used instead of the compose file's values, until **Reset to the compose file** on its Edit page.
+They can only be removed from the compose file:
 
 ```yaml
     environment:
@@ -399,6 +401,11 @@ Webhook URL). Everything else is optional: bot name, avatar, footer, a colour pe
 each with its own title and message. A live preview shows the result and **Send test** posts it before you
 save. Text that comes from a BMC can never ping anyone.
 
+Each alert names its server and model at the top with an icon for its level (🔴 🟠 🟢 🔵), and under the
+message shows what is worth a glance: the CPU against its failsafe, the fans in % and RPM, the mode, the air
+in and out, the power draw, and for a failsafe or ignored command the reason. Give the **dashboard address**
+and every alert (and the status report) links to its server's page. ntfy, Gotify and the webhook get the same.
+
 | Event | Level | Sent when |
 | --- | --- | --- |
 | Failsafe reached | warning | A limit trips and the BMC takes over |
@@ -410,14 +417,17 @@ save. Text that comes from a BMC can never ping anyone.
 | Controller error | error | The control loop hits an unexpected error |
 | Failsafe lasting | error | The BMC has held the fans for longer than the set time (10 min by default) |
 | Fan failed | error | A fan stops while the others spin, or the BMC reports it failed (two readings in a row) |
-| Fan commands ignored | error | The speed moved by 20 points or more, and 30 s later the RPM had not followed |
+| Fan commands ignored | error | The speed moved by 20 points or more and the RPM did not follow, or at a steady speed the fans do not turn as that speed made them (the BMC took them back) |
 | Room running hot | warning | The inlet air passes its warning temperature (35 °C by default) |
 | Settings changed | info | Someone applies new settings (off by default) |
 | Controller started | info | The container starts (off by default) |
+| Fan calibration | info | A calibration finishes or stops, with what it found (off by default) |
+| Handed to the BMC | info | The fans are handed to the BMC for a while, or taken back (off by default) |
 | Status report | info | On a schedule (off by default) |
 
 Placeholders: `{server}` `{host}` `{model}` `{cpu}` `{speed}` `{mode}` `{reason}` `{error}` `{failsafe}`
-`{threshold}` `{interval}` `{time}`; status reports add `{period}` `{cpu_min}` `{cpu_avg}` `{cpu_max}`
+`{threshold}` `{interval}` `{time}` `{inlet}` `{exhaust}` `{watts}` `{rpm_now}`; calibrations add `{status}` `{result}`,
+hand-overs `{handover}` `{detail}`; status reports add `{period}` `{cpu_min}` `{cpu_avg}` `{cpu_max}`
 `{speed_avg}` `{power_avg}` `{dell_pct}`.
 
 The **status report** is one card per server: CPU, fans and power now, minimum, average and maximum over

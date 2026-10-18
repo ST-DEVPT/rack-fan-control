@@ -185,3 +185,25 @@ class RateLimit(unittest.TestCase):
                 alerts.post_webhook(HOOK, {"content": "x"})
         finally:
             alerts.urllib.request.urlopen = real
+
+
+class Embeds(unittest.TestCase):
+    def test_an_alert_says_who_how_bad_and_links_to_the_server(self):
+        cfg = alerts.validate_alerts({"dashboard_url": "https://fans.example.com/"}, alerts.alert_config())
+        values = {**alerts.SAMPLE, "server_id": "rack-a"}
+        embed = alerts.build_payload(cfg, "failsafe", values)["embeds"][0]
+        self.assertEqual(embed["author"]["name"], "🟠 Rack A · PowerEdge R730")
+        self.assertEqual(embed["url"], "https://fans.example.com/#/server/rack-a")
+        names = [f["name"] for f in embed["fields"]]
+        self.assertEqual(names, ["CPU", "Fans", "Mode", "Air", "Power", "Why"])
+        self.assertIn("6,120 rpm", embed["fields"][1]["value"])
+        _, _, text = alerts.plain(cfg, "failsafe", values)
+        self.assertIn("https://fans.example.com/#/server/rack-a", text)
+        with self.assertRaises(ValueError):
+            alerts.validate_alerts({"dashboard_url": "javascript:alert(1)"}, alerts.alert_config())
+
+    def test_unknown_values_are_left_out(self):
+        cfg = alerts.alert_config()
+        values = {**alerts.SAMPLE, "cpu": "—", "inlet": "—", "exhaust": "—", "watts": "—", "rpm_now": "—"}
+        names = [f["name"] for f in alerts.build_payload(cfg, "unreachable", values)["embeds"][0]["fields"]]
+        self.assertEqual(names, ["Fans", "Mode"])

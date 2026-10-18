@@ -21,7 +21,8 @@ from .config import DATA_DIR, HISTORY_SECONDS, INTERVAL, VERSION, WEB
 from .control import validate_settings
 from .drivers import DRIVERS, DriverError, bare_host, detect, forget_pin, scan
 from .metrics import metrics
-from .server import SERVERS, registry_lock, save_dashboard_servers, stalled, start, stop, unique_id, validate_server
+from .server import (SERVERS, env_servers, registry_lock, save_dashboard_servers, stalled, start, stop, unique_id,
+                     validate_server)
 from .widgets import WIDGET_FIELDS, homarr_widget, save_widget_fields, widget_fields, widget_view
 
 KEY = b""  # set by app.main() once the data folder is known to be writable
@@ -413,7 +414,7 @@ def post_server_test(h):
     """Read the BMC once with the details being entered, before they are saved."""
     stored = SERVERS.get(str(h.body.get("id", "")))
     try:
-        cfg = validate_server(h.body, stored.cfg if stored and stored.cfg.get("source") == "dashboard" else None)
+        cfg = validate_server(h.body, stored.cfg if stored else None)
     except (ValueError, TypeError) as e:
         return h.send(400, {"ok": False, "error": str(e)})
     drv = DRIVERS[cfg["driver"]](cfg["host"], cfg["username"], cfg.get("password", ""), cfg["verify_tls"], str(DATA_DIR))
@@ -487,8 +488,16 @@ def post_server_edit(h, sid, delete):
         srv = server_or_404(h, sid)
         if srv is None:
             return None
-        if srv.cfg.get("source") == "environment":
-            return h.send(409, {"error": "this server is defined in the environment; change it there"})
+        source = srv.cfg.get("source")
+        if delete and source == "environment":
+            return h.send(409, {"error": "this server is declared in the compose file; remove it there"})
+        if delete and source == "override":  # back to what the compose file says
+            env = next((c for c in env_servers() if c["id"] == srv.id), None)
+            stop(srv)
+            srv = start(env)
+            save_dashboard_servers()
+            srv.log(f"Connection settings reset to the compose file's by {h.who()}")
+            return h.send(200, srv.info())
         if delete:
             stop(srv, forget=True)
             forget_pin(str(DATA_DIR), srv.host)
@@ -499,6 +508,8 @@ def post_server_edit(h, sid, delete):
             cfg = validate_server(h.body, srv.cfg)
         except (ValueError, TypeError) as e:
             return h.send(400, {"error": str(e)})
+        if source in ("environment", "override"):  # kept here, over the compose file's values, until reset
+            cfg.update(source="override", overrides=True)
         stop(srv)  # restart with the new address, credentials or driver
         forget_pin(str(DATA_DIR), cfg["host"])  # saving accepts the certificate the BMC shows now
         srv = start(cfg)

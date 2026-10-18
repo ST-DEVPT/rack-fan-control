@@ -3,6 +3,21 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.0] - 2026-10-19
+
+- **Servers declared in the compose file can be edited in the dashboard.** The change is kept there and used
+  instead of the compose file's values until **Reset to the compose file**; they are still removed only from
+  the compose file.
+- **Discord alerts say more, at a glance**: the server and model at the top with an icon for the level, then the
+  CPU against its failsafe, the fans in % and RPM, the mode, the air in and out, the power draw and, for a
+  failsafe or an ignored command, the reason. Only what is known is shown.
+- **Alerts link to the server's page** when the dashboard address is set (Alerts → Look); ntfy, Gotify and the
+  webhook get the link and the same details.
+- **Two new alerts** (off by default): a fan calibration finished or stopped, with what it found; the fans
+  handed to the BMC or taken back.
+- **The status report** shows the fan RPM, fans that do not follow, a hand-over or a calibration in progress, and
+  links to each server.
+
 ## [2.12.1] - 2026-10-17
 
 - 2.12.0 was not published: the iDRAC thermal settings panel took over the check that tells an out-of-range

@@ -263,8 +263,11 @@ class Server:
             log.error("could not save the hand-over: %s", e, extra={"server": self.id})
         if until:
             self.log(f"Fans handed to the BMC until {time.strftime('%H:%M', time.localtime(until))}{by}")
+            notify(self, "handover", handover="handed to the BMC",
+                   detail=f"Until {time.strftime('%H:%M', time.localtime(until))}{by}.")
         elif was:
             self.log(f"Fans taken back from the BMC{by}")
+            notify(self, "handover", handover="taken back", detail=f"Fan Control has them again{by}.")
         self.wake.set()
 
     # ---- fan calibration
@@ -409,6 +412,11 @@ class Server:
         else:
             self.log(f"Fan calibration stopped at {at}%: {reason}", "warn")
         self.wake.set()
+        result = (f"Suggested minimum speed {c['suggested']}%" + (f": below {c['floor']}% the fans turn no slower."
+                                                                  if c.get("floor") is not None else ".")
+                  if c.get("suggested") is not None else f"Stopped at {c['at']}%: {reason}." if status != "done"
+                  else "No speed kept every fan turning: check the fans.")
+        notify(self, "calibration", status="finished" if status == "done" else "stopped", result=result)
         try:
             write_json(self.calib_file, c)
         except OSError as e:
@@ -1067,8 +1075,9 @@ def dashboard_servers():
 
 
 def save_dashboard_servers():
+    # servers added here, and compose servers edited here (kept as overrides of the compose file's values)
     rows = [{k: v for k, v in s.cfg.items() if k != "source"}
-            for s in SERVERS.values() if s.cfg.get("source") == "dashboard"]
+            for s in SERVERS.values() if s.cfg.get("source") in ("dashboard", "override")]
     write_json(SERVERS_FILE, rows, private=True)  # holds BMC passwords
 
 
@@ -1144,7 +1153,15 @@ def validate_server(new, current=None):
 
 def load_registry():
     taken = set()
-    for cfg in env_servers() + dashboard_servers():
+    env = {cfg["id"]: cfg for cfg in env_servers()}
+    saved = dashboard_servers()
+    # a compose server edited in the dashboard: what was saved here wins over the compose file
+    overrides = {row["id"]: row for row in saved if row.get("overrides") and row.get("id") in env}
+    for cfg in list(env.values()) + [row for row in saved if row.get("id") not in overrides]:
+        if cfg.get("overrides") and cfg.get("source") != "environment":  # its compose entry is gone: a server of its own
+            cfg.pop("overrides")
+        if cfg["id"] in overrides and cfg.get("source") == "environment":
+            cfg = {**overrides[cfg["id"]], "source": "override"}
         if cfg["id"] in taken:  # an environment server and a saved one with the same name
             cfg["id"] = unique_id(cfg["id"], taken)
         taken.add(cfg["id"])

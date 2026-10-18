@@ -230,7 +230,7 @@ function renderServer() {
   $("#s-vendor").textContent = s.driver_label;
   $("#s-model").textContent = s.model || s.driver_label;
   $("#host").textContent = s.driver === "demo" ? "simulated data" : s.host === "local" ? "local BMC" : s.host;
-  $("#s-edit").hidden = s.source === "environment";
+  $("#s-edit").hidden = false;
   $("#s-edit").href = "#/edit/" + encodeURIComponent(s.id);
   $("#s-diag").href = `/api/servers/${encodeURIComponent(s.id)}/diagnostics`;
   const stale = !s.updated || Date.now() / 1000 - s.updated > s.interval * 3;

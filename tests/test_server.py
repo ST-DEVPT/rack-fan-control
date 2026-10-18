@@ -661,3 +661,23 @@ class HostSensors(unittest.TestCase):
         for bad in ([{"name": "x", "value": 500}], [{"name": "", "value": 40}], "GPU", [{"name": "x", "value": 40, "warn": 5}]):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 srv.push_sensors(bad, 0)
+
+
+class ComposeOverrides(unittest.TestCase):
+    def test_an_edited_compose_server_comes_back_edited(self):
+        import fanctl.server as srvmod
+        env = [{"id": "cmp", "name": "From compose", "driver": "demo", "host": "", "source": "environment"}]
+        saved = [{"id": "cmp", "name": "Edited here", "driver": "demo", "host": "", "overrides": True},
+                 {"id": "gone", "name": "Was compose", "driver": "demo", "host": "", "overrides": True}]
+        real = srvmod.env_servers, srvmod.dashboard_servers, dict(SERVERS)
+        srvmod.env_servers, srvmod.dashboard_servers = (lambda: [dict(c) for c in env]), (lambda: [dict(r) for r in saved])
+        SERVERS.clear()
+        try:
+            srvmod.load_registry()
+            self.assertEqual((SERVERS["cmp"].name, SERVERS["cmp"].cfg["source"]), ("Edited here", "override"))
+            self.assertEqual(SERVERS["gone"].cfg["source"], "dashboard")  # its compose entry is gone: its own server
+            self.assertNotIn("overrides", SERVERS["gone"].cfg)
+        finally:
+            srvmod.env_servers, srvmod.dashboard_servers = real[0], real[1]
+            SERVERS.clear()
+            SERVERS.update(real[2])
