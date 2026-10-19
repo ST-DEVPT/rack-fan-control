@@ -14,7 +14,7 @@
   <a href="https://github.com/ST-DEVPT/rack-fan-control/actions/workflows/docker.yml"><img alt="CI" src="https://github.com/ST-DEVPT/rack-fan-control/actions/workflows/docker.yml/badge.svg"></a>
   <a href="https://github.com/ST-DEVPT/rack-fan-control/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ST-DEVPT/rack-fan-control?color=e4501b"></a>
   <a href="https://github.com/ST-DEVPT/rack-fan-control/pkgs/container/rack-fan-control"><img alt="Image" src="https://img.shields.io/badge/ghcr.io-amd64%20%7C%20arm64-2c6b8a"></a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.10%E2%80%933.13-3b7a39">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%E2%80%933.14-3b7a39">
   <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-none-3b7a39">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-4f4d48"></a>
 </p>
@@ -599,7 +599,7 @@ FANCTL_URL=http://localhost:8080 FANCTL_PASSWORD=... python -m unittest discover
 ```
 
 CI runs all of it on every push: ruff, `node --check` and a duplicate-name check across each page's scripts,
-shellcheck, promtool on the alert rules, the unit tests on Python 3.10 to 3.13, then the image itself: its
+shellcheck, promtool on the alert rules, the unit tests on Python 3.10 to 3.14, then the image itself: its
 health check, the browser tests (every page, WCAG 2 AA with axe, keyboard and touch layouts, Portuguese),
 `docker stop` handing the fans back, and a Trivy scan that fails on any fixable HIGH or CRITICAL
 vulnerability. Published images carry an SBOM and build provenance; actions are pinned by commit and the base
