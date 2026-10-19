@@ -1,6 +1,8 @@
-"""Read-only access tokens created in the dashboard: "widget" (the embed page and /api/widget) and
-"metrics" (/metrics). Only a SHA-256 of each is stored, so the file cannot hand them out; the token
-itself is shown once, when it is created. EMBED_TOKEN and METRICS_TOKEN still work alongside."""
+"""Access tokens created in the dashboard: "widget" (the embed page and /api/widget), "metrics"
+(/metrics), both read-only, and "control" (for automations: what a read-only account sees, plus fan
+settings and the hand-over; never BMC accounts, servers, alerts, tokens or backups). Only a SHA-256
+of each is stored, so the file cannot hand them out; the token itself is shown once, when it is
+created. EMBED_TOKEN and METRICS_TOKEN still work alongside."""
 
 import hashlib
 import hmac
@@ -12,7 +14,7 @@ from . import config
 from .config import DATA_DIR, read_json, write_json
 
 TOKENS_FILE = DATA_DIR / "tokens.json"
-KINDS = ("widget", "metrics")
+KINDS = ("widget", "metrics", "control", "sensor")
 lock = threading.Lock()
 _cache = None
 
@@ -35,7 +37,7 @@ def _save():
 
 
 def env_token(kind):
-    return config.EMBED_TOKEN if kind == "widget" else config.METRICS_TOKEN
+    return {"widget": config.EMBED_TOKEN, "metrics": config.METRICS_TOKEN}.get(kind, "")
 
 
 def any_token(kind):
@@ -43,22 +45,27 @@ def any_token(kind):
         return bool(env_token(kind)) or any(r["kind"] == kind for r in _load())
 
 
-def check(token, kind):
-    """True for the environment token of this kind or any dashboard token of it. Every stored hash
-    is compared, in constant time, so the answer takes as long whichever matched."""
+def name_of(token, kind):
+    """The name of the token of this kind that this is ("environment" for EMBED_TOKEN and
+    METRICS_TOKEN), or None. Every stored hash is compared, in constant time, so the answer takes as
+    long whichever matched."""
     if not token:
-        return False
+        return None
     env = env_token(kind)
-    ok = bool(env) and hmac.compare_digest(str(token).encode(), env.encode())
+    found = "environment" if env and hmac.compare_digest(str(token).encode(), env.encode()) else None
     digest = _digest(token)
     with lock:
         for r in _load():
             if r["kind"] == kind and hmac.compare_digest(digest, r["hash"]):
-                ok = True
+                found = r["name"]
                 if time.time() - r.get("used", 0) > 600:  # last use, to the nearest 10 minutes
                     r["used"] = int(time.time())
                     _save()
-    return ok
+    return found
+
+
+def check(token, kind):
+    return name_of(token, kind) is not None
 
 
 def public():
@@ -70,7 +77,7 @@ def public():
 def create(name, kind):
     name = str(name or "").strip()
     if kind not in KINDS:
-        raise ValueError("kind must be widget or metrics")
+        raise ValueError("kind must be widget, metrics, control or sensor")
     if not 1 <= len(name) <= 40:
         raise ValueError("give the token a name of 1 to 40 characters")
     token = "fc_" + secrets.token_urlsafe(24)

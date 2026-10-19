@@ -40,7 +40,7 @@ class Upgrade(unittest.TestCase):
     def test_20_settings_brought_inside_the_new_limits(self):
         write("settings-up-20.json", SETTINGS_20)
         s = Server({"id": "up-20", "name": "R420", "driver": "demo"}).settings()
-        self.assertEqual((s["mode"], s["min_speed"], s["failsafe_temp"]), ("fixed", 10, 90))  # kept, not refused
+        self.assertEqual((s["mode"], s["min_speed"], s["failsafe_temp"]), ("fixed", 5, 90))  # kept, not refused
 
     def test_1x_history_loads_and_aggregates(self):
         import time

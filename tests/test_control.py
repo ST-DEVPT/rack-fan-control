@@ -82,9 +82,31 @@ class Protection(unittest.TestCase):
         self.assertEqual(decide(s, 50, True, {**self.SENSORS, "exhaust": 43})[3], True)   # still within 3 °C
         self.assertEqual(decide(s, 50, True, {**self.SENSORS, "exhaust": 42})[3], False)
 
+    def test_curve_follows_the_chosen_sensor(self):
+        sensors = {"temps": [{"name": "GPU", "value": 70, "cpu": False, "ok": True, "warn": None},
+                             {"name": "Temp", "value": 41, "cpu": True, "ok": True, "warn": None},
+                             {"name": "Temp", "value": 46, "cpu": True, "ok": True, "warn": None}],
+                   "exhaust": 38, "inlet": 22}
+        s = {**BASE, "mode": "curve", "min_speed": 10, "curve": [[30, 10], [70, 70]]}
+        self.assertEqual(decide(s, 46, sensors=sensors)[1:3], (34, "curve at 46°C"))   # the hottest CPU
+        self.assertEqual(decide({**s, "curve_source": "GPU"}, 46, sensors=sensors)[1:3], (70, "curve at GPU 70°C"))
+        self.assertEqual(decide({**s, "curve_source": "exhaust"}, 46, sensors=sensors)[2], "curve at exhaust air 38°C")
+        self.assertEqual(decide({**s, "curve_source": "Temp"}, 46, sensors=sensors)[1], 34)  # same name: the hottest
+        missing = decide({**s, "curve_source": "HBA"}, 46, sensors=sensors)
+        self.assertEqual(missing[0], "auto")                                            # no reading, the BMC decides
+        self.assertEqual(decide({**s, "curve_source": "GPU"}, 80, sensors=sensors)[0], "auto")  # CPU failsafe still
+        for bad in ("", 5, "x" * 61):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_settings({"curve_source": bad}, dict(DEFAULT_SETTINGS))
+        self.assertEqual(validate_settings({"curve_source": "GPU"}, dict(DEFAULT_SETTINGS))["curve_source"], "GPU")
+
     def test_minimum_speed(self):
         self.assertEqual(decide({**BASE, "mode": "fixed", "fixed_speed": 5, "min_speed": 12}, 40)[1], 12)
         self.assertEqual(decide({**BASE, "mode": "curve", "min_speed": 15}, 20)[1], 15)
+        low = validate_settings({"mode": "fixed", "fixed_speed": 5, "min_speed": 0}, dict(DEFAULT_SETTINGS))
+        self.assertEqual(decide({**BASE, **low}, 40)[1], 5)  # below 10 % when asked for
+        with self.assertRaises(ValueError):
+            validate_settings({"min_speed": -1}, dict(DEFAULT_SETTINGS))
 
     def test_new_settings_are_validated(self):
         for bad in ({"min_speed": 70}, {"exhaust_limit": 10}, {"threshold_margin": 50},
@@ -247,3 +269,36 @@ class QuietHours(unittest.TestCase):
         for bad in ({**good, "start": "24:00"}, {**good, "max_speed": 120}, {**good, "extra": 1}, "on"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 validate_settings({"quiet": bad}, dict(DEFAULT_SETTINGS))
+
+
+class SmartLimits(unittest.TestCase):
+    def test_the_cpu_target_keeps_8_degrees_from_the_failsafe(self):
+        from fanctl.control import smart_watch
+        s = {**DEFAULT_SETTINGS, "mode": "smart", "smart_target": 71, "failsafe_temp": 75}
+        self.assertEqual(smart_watch(s, 60, {})[0][2], 67)
+
+    def test_a_boost_under_a_cap_is_a_step_not_full_speed(self):
+        from fanctl.control import smart_step
+        s = {**DEFAULT_SETTINGS, "mode": "smart", "smart_target": 60, "failsafe_temp": 75, "min_speed": 10}
+        memory, learned = {}, {}
+        for t in range(0, 300, 15):  # cool, at the cap
+            smart_step(memory, learned, s, 50, {"watts": 100, "inlet": 22}, t, ceiling=25)
+        speed, info = smart_step(memory, learned, s, 72, {"watts": 100, "inlet": 22}, 300, ceiling=25)
+        self.assertTrue(info["boost"])
+        self.assertLessEqual(speed, 25 + 25)  # one boost step above where it was, not 100 %
+
+
+class ExtraCurves(unittest.TestCase):
+    def test_the_highest_curve_wins(self):
+        sensors = {"temps": [{"name": "host: GPU 0", "value": 80, "cpu": False, "ok": True, "warn": None}], "exhaust": 35}
+        s = validate_settings({"mode": "curve", "curve": [[30, 10], [70, 50]], "min_speed": 10,
+                               "extra_curves": [{"source": "host: GPU 0", "curve": [[50, 20], [85, 90]]}]},
+                              dict(DEFAULT_SETTINGS))
+        self.assertEqual(decide(s, 50, sensors=sensors)[1:3], (80, "curve at host: GPU 0 80°C"))
+        cool = {**sensors, "temps": [dict(sensors["temps"][0], value=40)]}
+        self.assertEqual(decide(s, 50, sensors=cool)[1:3], (30, "curve at 50°C"))   # the CPU's curve is higher
+        self.assertEqual(decide(s, 50, sensors={"temps": []})[1], 30)              # a missing sensor adds nothing
+        for bad in ([{"source": "", "curve": [[1, 2], [3, 4]]}], [{"source": "x", "curve": [[1, 200], [3, 4]]}],
+                    [{"source": "x", "curve": [[1, 2], [3, 4]]}] * 4):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_settings({"extra_curves": bad}, dict(DEFAULT_SETTINGS))

@@ -24,6 +24,7 @@
     <a href="#/prometheus" data-route="prometheus">Prometheus</a>
     <a href="#/grafana" data-route="grafana">Grafana</a>
     <a href="#/homarr" data-route="homarr">Homarr</a>
+    <a href="#/automation" data-route="automation">Automation</a>
     <a href="#/backup" data-route="backup">Backup</a>
   </nav>
   <div class="side-foot">
@@ -96,13 +97,15 @@
           <span><i class="dash" style="--c:var(--ink-3)"></i>Exhaust <span class="tu">°C</span></span>
           <span><i style="--c:var(--accent)"></i>Fans %</span>
           <span id="legend-auto"><i class="box"></i>Automatic</span>
+          <span id="legend-target" hidden><i class="dash" style="--c:var(--cool)"></i>Smart target</span>
         </div>
         <div class="aside tabs" role="group" aria-label="Time range">
           <button data-range="900">15 min</button><button data-range="3600" aria-pressed="true">1 h</button><button data-range="10800">3 h</button><button data-range="86400">24 h</button><button data-range="604800">7 d</button>
         </div>
+        <a class="inline-btn csv" id="csv" download title="Download this range as a spreadsheet">CSV</a>
       </div>
       <div class="chart-wrap">
-        <svg id="chart" aria-label="Temperature and fan history chart"></svg>
+        <svg id="chart" role="img" aria-label="Temperature and fan history chart"></svg>
         <div class="tip" id="tip"></div>
       </div>
     </section>
@@ -110,6 +113,13 @@
     <section>
       <div class="hd"><h2>Control</h2><span class="aside" id="applied"></span></div>
       <div class="monitor-note" id="monitor-note" hidden></div>
+      <div class="bmc-profile" id="bmc-profile" hidden>
+        <h3>iDRAC thermal settings <span class="badge">experimental</span></h3>
+        <p class="help">This iDRAC has no fan commands, but its own settings can make it quieter. The iDRAC keeps
+          control and all its protection: these are written to it once, not driven.</p>
+        <div class="fields" id="bp-fields"></div>
+        <div class="actions"><span class="spacer"></span><button class="btn primary" id="bp-apply">Apply to the iDRAC</button></div>
+      </div>
       <div id="control-body">
       <div class="seg" role="group" aria-label="Mode">
         <button data-mode="auto">Automatic</button><button data-mode="fixed">Fixed</button><button data-mode="curve">Curve</button><button data-mode="smart">Smart</button>
@@ -138,6 +148,7 @@
         </div>
         <p class="help smart-live" id="smart-live"></p>
         <p class="help smart-live" id="smart-detail"></p>
+        <p class="help smart-live" id="smart-report"></p>
         <div class="smart-map" id="smart-map" hidden>
           <div class="smart-map-hd"><span>Learned: the speed each power draw needs</span>
             <button type="button" class="inline-btn" id="smart-forget">Forget</button></div>
@@ -146,6 +157,9 @@
       </div>
       <div class="panel" data-panel="curve">
         <p class="help">Drag the points, or set them below. Points also take the arrow keys (Shift for steps of 5) and Delete.</p>
+        <div class="curve-src"><label for="curve-src">Follows</label><select id="curve-src"></select>
+          <small class="muted">The CPU failsafe applies whichever sensor the curve follows</small></div>
+        <div class="extra-curves" id="extra-curves"></div>
         <div class="presets curve-presets">
           <span class="muted">Start from</span>
           <button data-curve="quiet" title="Homelab, Xeon E5 class CPUs">Quiet</button>
@@ -168,10 +182,12 @@
         </div>
         <div class="f">
           <label for="min-speed">Minimum speed<small>Fans never go below this in fixed, curve and smart modes. Cards without a sensor rely on it</small></label>
-          <div class="num"><input type="number" id="min-speed" min="10" max="60" step="1"><span class="muted">%</span></div>
+          <div class="num"><input type="number" id="min-speed" min="0" max="60" step="1"><span class="muted">%</span></div>
+          <small class="min-warn" id="min-warn" role="status" hidden></small>
         </div>
         <div class="f quiet-row">
-          <label>Quiet hours<small>Caps the fan speed overnight. The failsafe still applies at any hour</small></label>
+          <label>Quiet hours<small>Caps the fan speed overnight. The failsafe still applies at any hour</small>
+            <small class="min-warn" id="clock-warn" hidden></small></label>
           <div class="quiet">
             <div class="mini" role="group" aria-label="Quiet hours" id="quiet-on">
               <button data-quiet="false">Off</button><button data-quiet="true">On</button>
@@ -223,6 +239,17 @@
         <button class="btn" id="discard" disabled>Discard</button>
         <button class="btn primary" id="save" disabled>Apply</button>
       </div>
+      <details class="changes" id="changes">
+        <summary>Earlier settings</summary>
+        <div id="changes-list"></div>
+      </details>
+      <div class="handover">
+        <span class="muted" id="ho-text">Hand the fans to the BMC for</span>
+        <span class="mini" role="group" aria-label="Hand the fans to the BMC" id="ho-btns">
+          <button data-ho="60">1 h</button><button data-ho="240">4 h</button><button data-ho="720">12 h</button>
+        </span>
+        <button class="inline-btn" id="ho-end" hidden>Take back now</button>
+      </div>
       </div>
     </section>
   </div>
@@ -232,6 +259,18 @@
     <section>
       <div class="hd"><h2>Fans</h2><span class="aside" id="fan-count"></span></div>
       <table><thead><tr><th>Sensor</th><th></th><th class="r" id="fan-unit">RPM</th></tr></thead><tbody id="fans"></tbody></table>
+      <div class="calib" id="calib" hidden>
+        <p class="help" id="calib-text">Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.</p>
+        <p class="help" id="calib-note" hidden></p>
+        <p class="help" id="calib-power" hidden></p>
+        <p class="help" id="calib-use-power" hidden></p>
+        <div class="curve-box" id="calib-chart" hidden><svg id="calib-svg" viewBox="0 0 400 140" aria-label="Fan RPM at each speed"></svg></div>
+        <div class="calib-actions">
+          <button class="inline-btn" id="calib-start">Calibrate fans</button>
+          <button class="inline-btn" id="calib-stop" hidden>Stop</button>
+          <button class="inline-btn" id="calib-use" hidden></button>
+        </div>
+      </div>
     </section>
     <section>
       <div class="hd"><h2>Temperatures</h2><span class="aside" id="temp-count"></span></div>
@@ -240,6 +279,10 @@
     <section>
       <div class="hd"><h2>Events</h2><span class="aside" id="updated"></span></div>
       <div class="log-scroll"><table class="log"><tbody id="log"></tbody></table></div>
+      <details class="sel" id="sel">
+        <summary>BMC event log</summary>
+        <div id="sel-body"></div>
+      </details>
     </section>
   </div>
 
@@ -252,6 +295,7 @@
     <div>
       <div class="crumbs"><a href="#/">Overview</a> / <span id="e-crumb">Add server</span></div>
       <h1 id="e-title">Add a server</h1>
+      <p class="note" id="e-compose" hidden></p>
       <p class="lede" id="e-lede">Choose what you have, enter how to reach its management controller, and test the connection.</p>
     </div>
   </header>
@@ -286,6 +330,9 @@
           <label>User<input id="e-user" spellcheck="false" autocomplete="off"></label>
           <label>Password<input id="e-pass" type="password" autocomplete="new-password"></label>
         </div>
+        <label id="e-cipher-row">IPMI cipher suite<select id="e-cipher"><option value="">Automatic</option>
+          <option value="3">3</option><option value="17">17</option></select>
+          <small>Automatic tries ipmitool's default, then 3. Pick 3 when the BMC says "Unable to establish IPMI v2 / RMCP+ session"</small></label>
         <label class="check" id="e-tls-row"><input type="checkbox" id="e-tls"> Verify the TLS certificate <small>(leave off for the self-signed certificates BMCs ship with)</small></label>
         <div class="result" id="e-result" hidden></div>
         <div class="form-actions">
@@ -446,6 +493,65 @@
   </div>
 </section>
 
+<!-- ======================================================== Automation -->
+<section class="view" id="v-automation" hidden>
+  <header class="page-head">
+    <div>
+      <h1>Automation</h1>
+      <p class="lede">Change the fan mode or hand the fans to the BMC from Home Assistant, n8n, cron or a script.</p>
+    </div>
+    <span class="status-pill" id="au-status"></span>
+  </header>
+  <div class="int-grid">
+    <div class="int-main">
+      <section class="int-step">
+        <h2><span class="n">1</span> Create a control token</h2>
+        <p>It reads what a read-only account sees, changes the mode, speeds and targets, and hands the fans to the
+          BMC. The protections (failsafe, limits, minimum speed) stay with an admin. It never sees BMC accounts and
+          cannot change servers, alerts, tokens or backups. Every change it makes is logged with its name.</p>
+        <div class="tokens" data-kind="control"></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">2</span> Try it</h2>
+        <p>Send it as a Bearer header. Settings take only the fields you send; the rest stay as they are.</p>
+        <div class="code"><pre tabindex="0" id="au-curl"></pre><button class="copy" data-copy="au-curl">Copy</button></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">3</span> Home Assistant</h2>
+        <p data-i18n="au-ha">Two buttons and a sensor, for <code>configuration.yaml</code>; the token goes in <code>secrets.yaml</code>.</p>
+        <div class="code"><pre tabindex="0" id="au-ha"></pre><button class="copy" data-copy="au-ha">Copy</button></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">4</span> Proxmox backups</h2>
+        <p data-i18n="au-pve">The BMC takes the fans while backups run and gives them back when they end. Save this as
+          <code>/usr/local/bin/fan-control-backup</code>, make it executable, and add
+          <code>script: /usr/local/bin/fan-control-backup</code> to <code>/etc/vzdump.conf</code>.</p>
+        <div class="code"><pre tabindex="0" id="au-pve"></pre><button class="copy" data-copy="au-pve">Copy</button></div>
+      </section>
+      <section class="int-step">
+        <h2><span class="n">5</span> Host sensors</h2>
+        <p>Temperatures the BMC cannot see, a GPU or the disks, sent by a script on the host. They count like any
+          sensor with a warning threshold: smart mode keeps them clear of it, the BMC takes over near it, and the
+          curve can follow one. They never stand in for the CPU, and one that stops arriving hands the fans to the
+          BMC. A sensor token can send them and do nothing else.</p>
+        <div class="tokens" data-kind="sensor"></div>
+        <div class="code"><pre tabindex="0" id="au-host"></pre><button class="copy" data-copy="au-host">Copy</button></div>
+        <p class="hint" data-i18n="au-forget">To stop using them, send <code>{"forget": true}</code> to the same address.</p>
+      </section>
+    </div>
+    <aside class="int-side">
+      <h2>What it can do</h2>
+      <table class="metric-table"><tbody>
+        <tr><td><code>GET /api/overview</code></td><td>Every server, briefly</td></tr>
+        <tr><td><code>GET /api/state</code></td><td>One server in full, with its history</td></tr>
+        <tr><td><code>POST /api/settings</code></td><td>Mode, speeds, targets, quiet hours; not the protections</td></tr>
+        <tr><td><code>POST /api/handover</code></td><td>The fans to the BMC for some minutes; 0 takes them back</td></tr>
+      </tbody></table>
+      <p data-i18n="au-server" class="hint">Add <code>?server=</code> with the server's id. The protections apply to every change, whoever makes it.</p>
+    </aside>
+  </div>
+</section>
+
 <!-- ======================================================== Backup -->
 <section class="view" id="v-backup" hidden>
   <header class="page-head">
@@ -512,6 +618,10 @@
           <div><label for="al-footer">Footer</label><input id="al-footer" maxlength="200"></div>
         </div>
         <div class="fld">
+          <label for="al-dashboard">Dashboard address <small>(optional) each alert then links to its server's page</small></label>
+          <input id="al-dashboard" placeholder="https://fans.example.com" spellcheck="false">
+        </div>
+        <div class="fld">
           <label for="al-avatar">Avatar image URL</label>
           <input id="al-avatar" placeholder="https://…/avatar.png" spellcheck="false">
         </div>
@@ -519,7 +629,7 @@
           <label>Colours</label>
           <div class="colors" id="al-colors"></div>
         </div>
-        <label class="check"><input type="checkbox" id="al-details"> Add CPU, fans and mode under each message</label>
+        <label class="check"><input type="checkbox" id="al-details"> Add CPU, fans, mode, air and power under each message</label>
         <h3>Behaviour</h3>
         <div class="fld two">
           <div>

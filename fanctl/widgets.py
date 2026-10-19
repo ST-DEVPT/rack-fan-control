@@ -36,7 +36,7 @@ def widget_view(srv, fields):
         s = dict(srv.state)
         hour = [p for p in srv.history if p["t"] > now - 3600]
     sens = s["sensors"] or {}
-    out = {"id": srv.id, "name": srv.name, "updated": s["updated"]}
+    out = {"id": srv.id, "name": "Server" if srv.name == srv.host else srv.name, "updated": s["updated"]}
     if "status" in fields:
         stale = not s["updated"] or now - s["updated"] > INTERVAL * 4
         mode = srv.settings()["mode"]

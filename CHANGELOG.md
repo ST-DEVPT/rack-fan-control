@@ -3,6 +3,279 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.0] - 2026-10-19
+
+- **Servers declared in the compose file can be edited in the dashboard.** The change is kept there and used
+  instead of the compose file's values until **Reset to the compose file**; they are still removed only from
+  the compose file.
+- **Discord alerts say more, at a glance**: the server and model at the top with an icon for the level, then the
+  CPU against its failsafe, the fans in % and RPM, the mode, the air in and out, the power draw and, for a
+  failsafe or an ignored command, the reason. Only what is known is shown.
+- **Alerts link to the server's page** when the dashboard address is set (Alerts → Look); ntfy, Gotify and the
+  webhook get the link and the same details.
+- **Two new alerts** (off by default): a fan calibration finished or stopped, with what it found; the fans
+  handed to the BMC or taken back.
+- **The status report** shows the fan RPM, fans that do not follow, a hand-over or a calibration in progress, and
+  links to each server.
+
+## [2.12.1] - 2026-10-17
+
+- 2.12.0 was not published: the iDRAC thermal settings panel took over the check that tells an out-of-range
+  value in the control panel. Fixed; everything 2.12.0 lists ships here.
+
+## [2.12.0] - 2026-10-17
+
+- **More curves on other sensors**: up to 3 extra curves, each on its own sensor (a GPU, a disk shelf, the exhaust
+  air, a host sensor), next to the main one; the fans run at the highest speed any of them asks for, so an extra
+  curve can only add cooling. Typed as temperature:speed pairs under the main curve.
+- **Dell iDRAC 9 (3.34 and later) and iDRAC 10 over Redfish** (experimental): no fan commands there, but the
+  server page now sets the iDRAC's own thermal settings: thermal profile (Minimum Power is the quiet one), fan
+  speed offset, minimum fan speed within the iDRAC's limits, and the extra cooling for third-party PCIe cards.
+  Only the settings that iDRAC lists are shown and only known values are written; the iDRAC keeps control.
+
+## [2.11.0] - 2026-10-17
+
+- **Host sensors**: a script on the host sends the temperatures the BMC cannot see, a GPU or the disks, with a
+  new *sensor* token that can do nothing else (`POST /api/sensors`). They count like any sensor with a
+  warning threshold (smart mode, failsafe, curve source), never stand in for the CPU, and one that stops
+  arriving hands the fans to the BMC. The Automation page has a ready script for NVIDIA GPUs and disks.
+
+## [2.10.0] - 2026-10-17
+
+- **IPMI cipher suite and port**: newer ipmitool asks for cipher suite 17, which some BMCs list but cannot do
+  ("Unable to establish IPMI v2 / RMCP+ session"). Fan Control now tries suite 3 by itself when that happens,
+  and a server's connection settings (or `SERVER_n_IPMI_CIPHER`) can set one. An IPMI address may carry a
+  port, `10.0.0.5:6230`.
+- **Newer Redfish BMCs** that only have `ThermalSubsystem`, `Sensors` and `EnvironmentMetrics` (the older
+  `Thermal` and `Power` are deprecated, and OpenBMC turned them off) are read too.
+- **`rsp=0xd4` on iDRAC 9** from firmware 3.34.34.34 is explained as what it usually is there (fan commands
+  removed, use the Redfish type), not only as a user without Administrator rights.
+
+## [2.9.9] - 2026-10-17
+
+2.9.8 was not published (a lint check failed); its changes ship here. Plus the dashboard, from an independent
+review:
+
+- **Keyboard focus survives the 5-second refresh** on the sidebar, the overview cards, the schedule and the
+  curve points (it fell back to the top of the page).
+- **In °F, temperature differences convert as differences** ("warmed by 10 °C" was shown as 50 °F, not 18 °F).
+- **Portuguese**: the failsafe alert and its reasons, the monitoring-only note, failsafe cleared, PCIe cooling,
+  controller errors, new certificates, the Discord test toast, curve presets, "Edit server", and European
+  Portuguese wording.
+- **Over the failsafe reads "over"**, not "-2 °C below".
+- **The Alerts page reloads when opened** (one failed load left it dead), **test and import buttons come back
+  after a network error**, and live regions are only rewritten when their text changes (screen readers
+  repeated them every few seconds).
+- **A read-only account cannot reach the controls by keyboard either**; the history chart is announced as an
+  image.
+- **The smart mode report counts only the time spent in smart mode.**
+
+## [2.9.8] - 2026-10-17
+
+Operations, from an independent review:
+
+- **fan-guard.sh**:
+  - reads the compose file's `SERVER_1_...` servers (it only knew `GUARD_SERVERS` and the 1.x `IDRAC_HOST`,
+    so a current setup was guarded by nothing, in silence), and fails with a message when it has none;
+  - reads the `.env` as `KEY=value` lines instead of running it as shell code as root (a password with a
+    space or a `;` ran as a command), and refuses one the group or others can write (0646 passed);
+  - times Docker out after 15 s and runs one at a time, so a hung dockerd no longer stacks stuck guards;
+  - acts on a running but *unhealthy* container only after 5 minutes (a slow health check is not a dead loop).
+- **The example compose file** adds `init: true` (no zombie ssh processes) and log rotation, and Fan Control
+  logs an error while the password is still the example's `change-me`.
+- **Backups carry the fan calibrations**, and an import without passwords says how to finish it.
+- CI checks that `docker stop` really handed the fans back, and the browser tests open the Automation page.
+- README: the `/data` table lists every file; the watchdog's real timing.
+
+## [2.9.7] - 2026-10-17
+
+Control quality, from an independent review with simulations:
+
+- **Smart mode under quiet hours no longer boosts to 100 % and drops back to the cap every minute** (about 60
+  times an hour in a simulation): a boost is one step up, lifts the cap for a while and fades slowly.
+- **Fixed and curve modes let a cap give way within 8 °C of the failsafe**, as smart mode does: a cap the load
+  could not live with tripped the failsafe 28 times in 4 hours in a simulation, with two alerts each time.
+- **A smart target closer than 8 °C to the failsafe is aimed 8 °C under it**, as for every other sensor; closer,
+  it boosted every few minutes and never settled.
+- **Smart mode no longer slows the fans while the temperature is above its target**, learns a load only when it
+  held for the whole steady minute, never winds its trim past 100 %, and no longer shows "None cap 100%".
+- **The hardware's floors (Supermicro's 25 %, a fan's BMC minimum) are smart mode's floor too**, so it learns
+  only speeds that were sent; while the fans do not follow it adjusts nothing.
+- **An empty fan bay no longer pushes the minimum speed up to 60 %.**
+
+## [2.9.6] - 2026-10-17
+
+Security, from an independent review:
+
+- **Without a password, DNS rebinding no longer gives a web page admin access**: the dashboard then only
+  answers addresses, `localhost`, local names and the new `ALLOWED_HOSTS`.
+- **Reading a BMC's event log** is one read at a time per server and kept for a minute: a viewer could crowd
+  the BMC with sessions until the control loop's readings failed.
+- **No connection lives longer than 120 s**, so slow clients cannot hold every request slot.
+- **BMC timeouts no longer put the BMC address and user name in errors** that viewers, widgets and alerts see.
+- **Diagnostics hide the BMC address in every answer and form**, the BMC user, and Dell's service tag.
+- **A Redfish path from the BMC must stay on that host**; scan ranges written as IPv4-mapped IPv6 are refused;
+  alert channels refuse link-local addresses however they are written.
+- **Server names cannot hold quotes or control characters** (they reached a generated Home Assistant snippet);
+  widgets never show a BMC address used as a name.
+- **Deeply nested JSON is a 400**, and a 1 MB backup body is only read from an admin session.
+- Servers named "test", "scan" or "detect" get an id that does not collide with other routes.
+
+## [2.9.5] - 2026-10-17
+
+From a review of the control loop by independent reviewers:
+
+- **Turning dry run on while the BMC was busy left the fans in manual for the whole dry run**; the hand-over
+  is now tried every cycle until it works.
+- **`docker stop` during a slow command could leave the fans in manual**: a release that did not wait for
+  the loop hands the fans back again once the loop's last command is done.
+- **A failed fan that then vanished from the readings cleared its own fault** ("spinning again"); a fan that
+  turned and is no longer listed now trips the failsafe like a sensor that stops reporting.
+- **The ignored-command check compared with a reading one cycle too old**, so a quick 30 → 60 → 30 % looked
+  ignored and tripped a 10-minute failsafe. It is also off during a calibration.
+- **Supermicro: a hand-back before any take-over replaced the user's fan mode (HeavyIO) with Optimal**, and a
+  failed read of the mode was saved as the user's choice.
+- **A calibration no longer measures readings taken while the BMC had the fans.**
+- **The RPM each speed should give is not learned right after a take-back** (the BMC may still have the fans,
+  as after a power-on), nor out of order with the speeds around it.
+- **Quiet hours and schedule caps no longer cancel the easing out of a failsafe** in fixed and curve modes.
+- **The watchdog runs on a monotonic clock** (an NTP step no longer hides or fakes a stall), and a slow BMC
+  reading no longer counts towards a stall.
+- **A controller error is logged and alerted once per error**, not every cycle; odd Redfish answers are failed
+  readings instead of controller errors; a Redfish path from the BMC must stay on that host.
+- **A fan under its BMC minimum needs two readings** before the floor rises, and a new minimum speed resets it.
+- **iLO 4: a fan gone from the list keeps its PWM capped and released.**
+- **While the fans do not follow, they are taken back without waiting for a steady speed** (smart mode).
+
+## [2.9.4] - 2026-10-17
+
+- **Smart mode learns nothing while the BMC has the fans** (they do not follow): the speed it saw then is not
+  what held the target, and the learned map would have been wrong for good.
+- **A calibration starts by taking hold of the fans properly**, so it measures Fan Control's fans.
+- **Discord alerts rate-limited during an incident are sent again** after the wait Discord asks for (a
+  webhook takes 5 requests in 2 s; several servers going down at once went past that and lost alerts).
+
+## [2.9.3] - 2026-10-17
+
+- **One failed BMC reading no longer hands the fans over and sends two alerts.** A busy iDRAC drops a reading
+  now and then; that made the fans jump to the BMC's control and sent *unreachable* then *recovered*. Two
+  failed readings in a row are needed now (30 s at the default interval); the last decision holds meanwhile.
+- **A dashboard left open across an upgrade reloads itself** (when nothing is unsaved), instead of running
+  the old page against the new server.
+- The README says what no software can cover: a BMC that cannot be reached keeps the last manual speed.
+
+## [2.9.2] - 2026-10-17
+
+From a review of every way the BMC's real state can drift from what Fan Control believes (the family of #3):
+
+- **Every take-over takes hold properly**, not only the start and a host power-on: the end of a failsafe, a
+  hand-over or a dry run, a change from automatic and a refused command all let go and take hold again. A
+  warm reboot of the host (no power-off, but a POST) shows up as one of those, or as fans not following.
+- **iLO 4 unlocked re-sends its caps and Supermicro its Full mode at every take-over**, instead of up to 10
+  minutes later: a restarted iLO forgets the caps, a Supermicro back from a power cycle its mode.
+- **A power state the BMC cannot tell** ("Chassis Power is unknown" while it is busy) keeps the last one
+  known, instead of counting as off: that handed the fans over and faked a power-on.
+- **An empty fan bay no longer trips the failsafe for good**: a fan at 0 RPM that has not turned since Fan
+  Control started is logged as an empty bay. One that turned and stops, or that the BMC reports as failed,
+  still trips it.
+- **The first command after a start no longer waits for the BMC's thresholds** (`ipmitool sensor` can take a
+  minute, and a crash may have left the fans low); they are read with the second reading.
+- **The overview flags fans that do not follow**, like a failsafe.
+- **Quiet hours and the schedule say when the container's clock is not the browser's**, with the fix (`TZ`).
+- Troubleshooting: what to do when the fans do not follow (two controllers fight), empty bays, the clock.
+
+## [2.9.1] - 2026-10-17
+
+- **Fans the BMC took back are noticed and taken again** ([#3](https://github.com/ST-DEVPT/rack-fan-control/issues/3)).
+  An iDRAC 7 returned to its own control while its host started and then ignored the manual-mode command
+  sent every cycle, for 30 hours, with the dashboard showing nothing wrong. Now:
+  - control is taken back by letting go and taking hold again (on Dell, also looking for the fans afresh)
+    when Fan Control starts, when the host powers on and twice more during its start-up, and when the BMC
+    answers again after a silence;
+  - at a steady speed, the fans must turn as fast as that speed made them turn before (the calibration, or
+    what was seen while they followed). When they do not, the server page says so, the event log and the
+    *fan commands ignored* alert tell, and control is taken back every 5 minutes until they follow;
+  - `fanctl_fans_following` and a `FansNotFollowing` Prometheus rule;
+  - falling back to setting Dell fans one by one is logged, and retried with all fans at every take-back,
+    so a refusal during the host's start-up does not stick.
+
+## [2.9.0] - 2026-10-16
+
+- **Earlier settings**: the last 20 settings saved for each server, with when, who and what changed; any can
+  be loaded back into the panel and applied.
+- **The BMC's event log** (IPMI servers): how full it is and the last 25 entries, read when opened; an admin
+  can clear it. A full log stops recording, and fans under their minimum land there.
+- **How smart mode is doing**: over the last hours, how often the CPU was within 2 °C of the target, the
+  average fan speed and how often the fans changed direction; the target is drawn on the history chart.
+- **What the fans draw**, from the calibration: now, in kWh a month, and over 7 days with Fan Control against
+  with the BMC.
+- **Proxmox backup hook** on the Automation page: the BMC has the fans while `vzdump` jobs run.
+
+## [2.8.1] - 2026-10-16
+
+Safety, from a critical review of 2.6-2.8.
+
+- **Each fan's BMC minimum RPM is read and respected.** Under it the BMC logs an event, lights the amber LED
+  and may run every fan at full speed, and a minimum speed of 0 % or a calibration could get there. The fan
+  list shows it; the calibration goes no slower once a fan is within 15 % of it; a fan that reads under it
+  in normal control keeps the fans 5 % higher from then on; the minimum speed field warns from the
+  calibration's measurements.
+- **A control token can no longer weaken the protections**: the failsafe, the exhaust limit, the BMC
+  thresholds and their margin, the minimum speed and Dell's PCIe cooling are changed by an admin only. The
+  browser asked before such changes, but a script never did.
+
+## [2.8.0] - 2026-10-16
+
+- **Automation page and control tokens**: Home Assistant, n8n, cron or a script can change fan settings and
+  hand the fans to the BMC with a Bearer token, and read what a read-only account sees. A control token never
+  sees BMC accounts or touches servers, alerts, tokens or backups; its changes are logged with its name. The
+  page fills in `curl` examples and a Home Assistant `rest_command` and sensor.
+- **The curve can follow any temperature**: the hottest CPU (as before), the exhaust air, or a sensor such
+  as a GPU or a disk bay. The CPU failsafe applies whichever it follows; a sensor that gives no reading hands
+  the fans to the BMC.
+- **The history chart marks what happened**: settings changes, hand-overs, calibrations, failsafes and errors
+  as ticks along the top, listed in the tooltip.
+
+## [2.7.1] - 2026-10-16
+
+- **An alerts file with an empty section** (`"colors": null`, an event set to `null`), edited by hand, no
+  longer stops every alert and the control loop's checks; the defaults fill in.
+- **The dashboard's polling never stops for good** after one unexpected error, and the 24 h and 7 d charts
+  no longer show an error while the dashboard is offline (the banner already says so).
+- **Bursts of connections through a reverse proxy** wait in a deeper queue (64) instead of being refused.
+
+## [2.7.0] - 2026-10-16
+
+- **Fan calibration**: one button under the fan list steps the fans from 100 % down to 0 %, measures each
+  fan's RPM and the power draw at every step, and draws the curve. It says below which speed the fans turn
+  no slower, the lowest speed at which every fan kept turning, and what the fans cost in watts at full
+  speed, and puts the suggested minimum speed into the settings with one click. Every protection stays on;
+  when a fan stops at a low step, the steps above it still count.
+- **Hand the fans to the BMC for a while**: 1, 4 or 12 hours (any time up to a week through the API), for
+  maintenance or a stress test; control comes back on its own, also across a restart.
+- **History as CSV**: a button next to the chart's time range downloads it.
+
+## [2.6.2] - 2026-10-16
+
+- **Dell: the BMC's warning thresholds are read again on servers that have one unreadable sensor** (an empty
+  CPU socket, a PSU). `ipmitool sensor` lists every sensor and then exits with an error over that one; the
+  whole list was thrown away and the log said the thresholds could not be read. When they really cannot be,
+  the log now says why.
+- **Errors say what happened**: when a reverse proxy answers instead of Fan Control (502, 503, 504), the
+  message says so instead of a JSON parse error, and a request that never got an answer shows an error
+  instead of nothing. Every button reports failures the same way.
+
+## [2.6.1] - 2026-10-16
+
+- **Minimum speed goes down to 0 %** (it stopped at 10 %): fixed, curve and smart modes can run the fans as
+  slowly as the hardware allows. Lowering it still asks first, and a stopped fan still trips the failsafe.
+- **A request that fails inside Fan Control answers 500 with the reason**, and the log gets the traceback.
+  Before, the connection just closed, which a reverse proxy (Nginx Proxy Manager and the like) shows as an
+  opaque 502 with the cause nowhere.
+- **Refusals no longer reset the connection**: the request body is read before a 403, 415 or 400, so a proxy
+  passes the refusal on instead of a 502. A server busy with 64 requests answers 503 instead of dropping
+  the 65th. `Content-Type: application/json; charset=utf-8` is accepted.
+
 ## [2.6.0] - 2026-10-06
 
 Engineering, from an independent review: what keeps the other five areas true over time.

@@ -8,7 +8,7 @@ const KIND_NAMES = {
   unreachable: "BMC unreachable", refused: "Fan command refused", recovered: "Back to normal",
   controller_error: "Controller error", failsafe_long: "Failsafe lasting", fan_failed: "Fan failed",
   ignored: "Fan commands ignored", inlet_hot: "Room running hot", settings_changed: "Settings changed", started: "Controller started",
-  report: "Status report",
+  calibration: "Fan calibration", handover: "Handed to the BMC", report: "Status report",
 };
 const LEVEL_NAMES = { error: "Error", warn: "Warning", ok: "Resolved", info: "Info" };
 const SAMPLE = {
@@ -16,7 +16,11 @@ const SAMPLE = {
   reason: "curve at 71°C", error: "Unable to establish IPMI v2 / RMCP+ session", failsafe: "75",
   interval: "15", time: "12:00:00", period: "1 h", cpu_min: "48", cpu_avg: "55", cpu_max: "71",
   speed_avg: "24%", power_avg: "152", dell_pct: "0", inlet: "36", inlet_threshold: "35", minutes: "10", fan: "Fan3", rpm: "0 rpm",
+  exhaust: "48", watts: "182", rpm_now: "6,120", status: "finished",
+  result: "Suggested minimum speed 15%: below 15% the fans turn no slower.", handover: "handed to the BMC",
+  detail: "Until 14:00, by admin.",
 };
+const LEVEL_ICONS = { error: "🔴", warn: "🟠", ok: "🟢", info: "🔵" };
 const fillIn = (tpl, v) => tpl.replace(/\{(\w+)\}/g, (m, k) => k in v ? String(v[k]) : m);
 
 async function loadAlerts() {
@@ -32,7 +36,7 @@ async function loadAlerts() {
 }
 
 function alertsBody() {
-  const keys = ["enabled", "username", "avatar_url", "footer", "details", "mention", "mention_levels",
+  const keys = ["enabled", "username", "avatar_url", "footer", "dashboard_url", "details", "mention", "mention_levels",
                 "cooldown_minutes", "hot_threshold", "inlet_threshold", "failsafe_minutes", "report_minutes", "report_mode", "colors", "events"];
   const b = Object.fromEntries(keys.map(k => [k, aDraft[k]]));
   if (newWebhook !== undefined) b.webhook_url = newWebhook;
@@ -63,6 +67,7 @@ function renderAlerts() {
   $("#al-enabled").checked = d.enabled;
   setIfIdle("#al-username", d.username);
   setIfIdle("#al-footer", d.footer);
+  setIfIdle("#al-dashboard", d.dashboard_url || "");
   setIfIdle("#al-avatar", d.avatar_url);
   $("#al-details").checked = d.details;
   const [mKind, mId = ""] = d.mention.split(":");
@@ -110,13 +115,17 @@ function renderPreview() {
     ? { here: "@here", everyone: "@everyone", role: "@role", user: "@user" }[mKind] + (mId ? ` (${mId})` : "") : "";
   const avatar = /^https:\/\//.test(d.avatar_url) ? `<img class="dc-av" src="${esc(d.avatar_url)}" alt="">`
     : `<img class="dc-av" src="/static/icon.svg" alt="">`;
+  const why = ["failsafe", "ignored", "refused", "hot"].includes(aKind) ? `<div class="wide"><b>Why</b>${esc(v.reason)}</div>` : "";
   const fields = d.details ? `<div class="dc-fields">
-      <div><b>CPU</b>${esc(v.cpu)}°C</div><div><b>Fans</b>${esc(v.speed)}</div><div><b>Mode</b>${esc(v.mode)}</div></div>` : "";
+      <div><b>CPU</b><strong>${esc(v.cpu)}°C</strong> · failsafe ${esc(v.failsafe)}°C</div>
+      <div><b>Fans</b>${esc(v.speed)} · ${esc(v.rpm_now)} rpm</div><div><b>Mode</b>${esc(v.mode)}</div>
+      <div><b>Air</b>in ${esc(v.inlet)}°C · out ${esc(v.exhaust)}°C</div><div><b>Power</b>${esc(v.watts)} W</div>${why}</div>` : "";
   $("#al-preview").innerHTML = `${avatar}<div class="dc-body">
     <div class="dc-head"><b>${esc(d.username)}</b><span class="dc-app">APP</span><span class="dc-time">Today at 12:00</span></div>
     ${mention ? `<div class="dc-mention">${esc(mention)}</div>` : ""}
     <div class="dc-embed" style="--bar:${esc(d.colors[lvl])}">
-      <div class="dc-title">${esc(fillIn(ev.title, v))}</div>
+      <div class="dc-author">${LEVEL_ICONS[lvl]} ${esc(v.server)} · ${esc(v.model)}</div>
+      <div class="dc-title${d.dashboard_url ? " dc-link" : ""}">${esc(fillIn(ev.title, v))}</div>
       <div class="dc-desc">${esc(fillIn(ev.message, v))}</div>
       ${fields}
       ${d.footer ? `<div class="dc-foot">${esc(fillIn(d.footer, v))} · Today at 12:00</div>` : ""}
@@ -136,7 +145,7 @@ function renderReportPreview(d, v) {
       <div class="dc-desc">${esc(fillIn(ev.message, v))}</div>
       <div class="dc-fields">
         ${f("CPU", "<strong>50°C</strong> now<br>48–71°C · avg 55°C")}
-        ${f("Fans", "<strong>20%</strong><br>avg 24% · automatic 0% of the time")}
+        ${f("Fans", "<strong>20%</strong> · 4,180 rpm<br>avg 24% · automatic 0% of the time")}
         ${f("Power", "<strong>151 W</strong> now<br>avg 152 W")}
         ${f("Air", "in 22°C · out 38°C")}
         ${f("Status", "🟢 ok · mode curve")}
@@ -154,6 +163,7 @@ function renderReportPreview(d, v) {
 const bindText = (sel, key, map = v => v) => $(sel).addEventListener("input", e => { aDraft[key] = map(e.target.value); aTouch(); });
 bindText("#al-username", "username");
 bindText("#al-footer", "footer");
+bindText("#al-dashboard", "dashboard_url");
 bindText("#al-avatar", "avatar_url", v => v.trim());
 $("#al-cooldown").addEventListener("input", e => { const n = +e.target.value; if (Number.isInteger(n) && n >= 0 && n <= 1440) { aDraft.cooldown_minutes = n; aTouch(); } });
 $("#al-report-min").addEventListener("input", e => { const n = +e.target.value; if (Number.isInteger(n) && n >= 5 && n <= 1440) { aDraft.report_minutes = n; aTouch(); } });
@@ -200,7 +210,8 @@ $("#al-chips").addEventListener("click", e => {
   aTouch();
 });
 $("#al-reset").onclick = async () => {
-  const r = await fetch("/api/alerts", { cache: "no-store" });  // defaults are not in the draft; ask the server
+  const r = await api("/api/alerts");  // defaults are not in the draft; ask the server
+  if (!r.ok) return toast(await failure(r), true);
   const fresh = await r.json();
   const def = fresh.defaults[aKind];
   if (def.title) { aDraft.events[aKind].title = def.title; aDraft.events[aKind].message = def.message; }
@@ -212,9 +223,13 @@ $("#al-reset").onclick = async () => {
 
 $("#al-save").onclick = async () => {
   $("#al-save").disabled = true;
-  const r = await api("/api/alerts", alertsBody());
+  const r = await api("/api/alerts", alertsBody()).catch(() => null);
+  if (!r?.ok) {
+    toast("Could not save: " + (r ? await failure(r) : translate("Fan Control did not answer. Nothing was saved.")), true);
+    $("#al-save").disabled = false;
+    return;
+  }
   const res = await r.json();
-  if (!r.ok) { toast("Could not save: " + res.error, true); $("#al-save").disabled = false; return; }
   alerts = res; aDraft = structuredClone(res); newWebhook = undefined; newSecrets = {}; aDirty = false;
   $("#al-webhook").value = "";
   $$("#channels input[type=password]").forEach(i => i.value = "");
@@ -224,9 +239,12 @@ $("#al-save").onclick = async () => {
 $("#al-discard").onclick = () => loadAlerts();
 $("#al-test").onclick = async () => {
   $("#al-test").disabled = true;
-  const r = await api("/api/test-alert", { kind: aKind, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + (await r.json()).error, !r.ok);
-  $("#al-test").disabled = false;
+  try {
+    const r = await api("/api/test-alert", { kind: aKind, config: alertsBody() });
+    toast(r.ok ? `Test "${KIND_NAMES[aKind]}" sent to Discord${aKind === "report" ? " with the current readings" : ""}` : "Test failed: " + await failure(r), !r.ok);
+  } finally {
+    $("#al-test").disabled = false;
+  }
 };
 
 // ---------------------------------------------------------------- ntfy, Gotify, webhook
@@ -256,9 +274,12 @@ $("#channels").addEventListener("click", async e => {
   if (!b) return;
   const c = b.closest(".ch").dataset.ch, kind = aKind === "report" ? "failsafe" : aKind;
   b.disabled = true;
-  const r = await api("/api/test-alert", { kind, channel: c, config: alertsBody() });
-  toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + (await r.json()).error, !r.ok);
-  b.disabled = false;
+  try {
+    const r = await api("/api/test-alert", { kind, channel: c, config: alertsBody() });
+    toast(r.ok ? `Test "${KIND_NAMES[kind]}" sent to ${c}` : "Test failed: " + await failure(r), !r.ok);
+  } finally {
+    b.disabled = false;
+  }
 });
 
 loadAlerts();

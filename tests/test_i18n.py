@@ -13,7 +13,7 @@ ATTRS = ("placeholder", "title", "aria-label")
 SAME = {"Fan Control", "Homarr", "Grafana", "Prometheus", "Discord", "ntfy", "Gotify", "Smart", "CPU", "IPMI",
         "Redfish", "iDRAC", "iLO", "BMC", "EN", "PT", "°C", "°F", "%", "W", "s", "min", "rpm", "k rpm", "Auto",
         "@here", "@everyone", "iFrame", "Webhook", "JSON", "Bearer", "Supermicro", "Dell", "HPE", "max", "URL",
-        "RPM", "UP", "fan-control", "Rack A", "tk_…",
+        "RPM", "UP", "fan-control", "CSV", "Rack A", "tk_…",
         # menu names in Homarr, Grafana and Discord, which the reader looks for in English
         "Add board content", "Management → Custom Widgets", "Dashboards → New → Import", "Developer Mode → Copy ID"}
 

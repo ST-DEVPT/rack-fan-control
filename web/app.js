@@ -14,6 +14,8 @@ function toast(msg, error) {
   t.textContent = msg; t.className = "toast show" + (error ? " error" : "");
   clearTimeout(toast.h); toast.h = setTimeout(() => t.className = "toast", 3200);
 }
+// whatever a button's handler did not catch (a request that never got an answer, say) is said, not swallowed
+addEventListener("unhandledrejection", e => toast(`Error: ${e.reason?.message || e.reason}`, true));
 
 function curveSpeed(curve, temp) {
   const p = [...curve].sort((a, b) => a[0] - b[0]);
@@ -33,6 +35,7 @@ function status(x) {
   if (x.error) return { cls: "bad", text: "Unreachable" };
   if (!x.updated) return { cls: "", text: "Connecting…" };
   if (x.failsafe) return { cls: "warn", text: "Failsafe · automatic" };
+  if (x.following === false) return { cls: "warn", text: "Fans not following" };
   if (x.effective === "monitor") return { cls: "ok", text: "Monitoring" };
   if (x.effective === "auto") return { cls: "ok", text: "Automatic" };
   return { cls: x.dry_run ? "warn" : "ok", text: `${x.dry_run ? "Dry run · " : ""}${cap(x.mode)} · ${x.applied_speed}%` };
@@ -45,7 +48,7 @@ function parseRoute() {
   if (parts[0] === "add") return { view: "edit", driver: parts[1] || "" };
   if (parts[0] === "edit" && parts[1]) return { view: "edit", id: parts[1] };
   if (parts[0] === "alerts") return { view: "alerts" };
-  if (["prometheus", "grafana", "homarr", "backup"].includes(parts[0])) return { view: parts[0] };
+  if (["prometheus", "grafana", "homarr", "automation", "backup"].includes(parts[0])) return { view: parts[0] };
   return { view: "overview" };
 }
 
@@ -60,7 +63,7 @@ function go() {
     if (!confirm(translate("Discard unsaved changes?"))) { history.back(); return; }
     discard[route.view]();
   }
-  if (next.view === "server" && next.id !== route.id) { server = null; draft = null; }
+  if (next.view === "server" && next.id !== route.id) { server = null; draft = null; $("#changes").open = $("#sel").open = false; }
   route = next;
   $$(".view").forEach(v => v.hidden = v.id !== "v-" + route.view);
   $$(".side-nav a").forEach(a => a.setAttribute("aria-current", a.dataset.route === route.view));
@@ -69,8 +72,10 @@ function go() {
   if (route.view === "edit" && overview?.role === "viewer") { location.hash = "#/"; return toast("This account can only look", true); }
   if (route.view === "edit") openEditor();
   if (route.view === "overview") renderOverview();
-  if (["prometheus", "grafana", "homarr"].includes(route.view)) renderIntegration(route.view);
-  const title = { overview: "Overview", alerts: "Alerts", prometheus: "Prometheus", grafana: "Grafana", homarr: "Homarr", backup: "Backup",
+  if (route.view === "alerts" && typeof aDirty !== "undefined" && !aDirty) loadAlerts();
+  if (["prometheus", "grafana", "homarr", "automation"].includes(route.view)) renderIntegration(route.view);
+  const title = { overview: "Overview", alerts: "Alerts", prometheus: "Prometheus", grafana: "Grafana", homarr: "Homarr",
+                  automation: "Automation", backup: "Backup",
                   edit: route.id ? "Edit server" : "Add a server" }[route.view];
   if (title) document.title = `${translate(title)} · Fan Control`;
   scrollTo(0, 0);
@@ -83,8 +88,14 @@ async function pollOverview() {
     const r = await api("/api/overview");
     if (r.status === 401) return location.replace("/login");
     overview = await r.json();
+    // a page left open across an upgrade would run the old script against the new server: reload it
+    // once it has nothing unsaved
+    pollOverview.version ??= overview.version;
+    if (overview.version !== pollOverview.version && !dirty && !(typeof aDirty !== "undefined" && aDirty)) return location.reload();
     $("#signout").hidden = !overview.auth;
     document.body.classList.toggle("viewer", overview.role === "viewer");
+    for (const sel of ["#control-body", ".al-grid", "#channels", "#hm-fields"])  // look, not touch, also by keyboard
+      $$(sel).forEach(el => { el.inert = overview.role === "viewer"; });
     $("#version").textContent = /^\d/.test(overview.version) ? "v" + overview.version : overview.version;
     $("#update").hidden = !overview.update;
     if (overview.update) {
@@ -105,7 +116,8 @@ function offline(down) {
   if (!down) lastContact = Date.now();
   document.body.classList.toggle("offline", down);
   $("#offline").hidden = !down;
-  if (down) $("#offline").textContent = `Can't reach Fan Control. Readings below are from ${time(lastContact / 1000)}.`;
+  const text = `Can't reach Fan Control. Readings below are from ${time(lastContact / 1000)}.`;
+  if (down && $("#offline").dataset.en !== text) { $("#offline").textContent = text; $("#offline").dataset.en = text; }
 }
 
 async function pollServer() {
@@ -132,12 +144,12 @@ async function pollServer() {
 // ---------------------------------------------------------------- sidebar
 function renderSide() {
   if (!overview) return;
-  $("#side-servers").innerHTML = overview.servers.map(x => {
+  setHTML($("#side-servers"), overview.servers.map(x => {
     const st = status(x);
     return `<a href="#/server/${encodeURIComponent(x.id)}" aria-current="${route.view === "server" && route.id === x.id}">
       <span class="dot ${st.cls}" aria-hidden="true"></span><span class="nm">${esc(x.name)}</span><span class="sr">, ${esc(translate(st.text))}</span>
       <span class="t">${x.cpu_temp == null ? "" : fmt(tv(x.cpu_temp)) + "°"}</span></a>`;
-  }).join("") || '<p class="side-empty">No servers yet</p>';
+  }).join("") || '<p class="side-empty">No servers yet</p>');
 }
 
 // ---------------------------------------------------------------- overview
@@ -153,15 +165,15 @@ function renderOverview() {
   }
   const temps = list.map(x => x.cpu_temp).filter(v => v != null);
   const watts = list.map(x => x.watts).filter(v => v != null);
-  const issues = list.filter(x => x.error || x.failsafe).length;
+  const issues = list.filter(x => x.error || x.failsafe || x.following === false).length;
   $("#ov-lede").textContent = [
     `${list.length} server${list.length > 1 ? "s" : ""}`,
     temps.length ? `hottest CPU ${fmt(tv(Math.max(...temps)))} ${tu()}` : "",
     watts.length ? `${fmt(watts.reduce((a, b) => a + b))} W in total` : "",
     issues ? `${issues} need${issues > 1 ? "" : "s"} attention` : "all fine",
   ].filter(Boolean).map(translate).join(" · ");
-  $("#fleet").innerHTML = list.map(card).join("") +
-    `<a class="card add" href="#/add"><span class="plus">+</span><span>Add a server</span></a>`;
+  setHTML($("#fleet"), list.map(card).join("") +
+    `<a class="card add" href="#/add"><span class="plus">+</span><span>Add a server</span></a>`);
 }
 
 function card(x) {
@@ -169,7 +181,7 @@ function card(x) {
   const fans = x.effective === "manual" ? `${x.applied_speed}%` : x.fan_pct != null ? `${x.fan_pct}%` :
     x.fan_rpm != null ? `${(x.fan_rpm / 1000).toFixed(1)}k rpm` : "—";
   const badge = x.control ? (x.experimental ? "Fan control · experimental" : "Fan control") : "Monitoring";
-  return `<a class="card${x.error ? " is-bad" : x.failsafe ? " is-warn" : ""}" href="#/server/${encodeURIComponent(x.id)}">
+  return `<a class="card${x.error ? " is-bad" : x.failsafe || x.following === false ? " is-warn" : ""}" href="#/server/${encodeURIComponent(x.id)}">
     <div class="card-top"><span class="dot ${st.cls}"></span><b>${esc(x.name)}</b><span class="vendor">${esc(x.vendor)}</span></div>
     <div class="card-sub">${esc(x.model || x.driver_label)}${x.host ? " · " + esc(x.host) : ""}</div>
     <div class="card-main">
@@ -218,7 +230,7 @@ function renderServer() {
   $("#s-vendor").textContent = s.driver_label;
   $("#s-model").textContent = s.model || s.driver_label;
   $("#host").textContent = s.driver === "demo" ? "simulated data" : s.host === "local" ? "local BMC" : s.host;
-  $("#s-edit").hidden = s.source === "environment";
+  $("#s-edit").hidden = false;
   $("#s-edit").href = "#/edit/" + encodeURIComponent(s.id);
   $("#s-diag").href = `/api/servers/${encodeURIComponent(s.id)}/diagnostics`;
   const stale = !s.updated || Date.now() / 1000 - s.updated > s.interval * 3;
@@ -229,7 +241,9 @@ function renderServer() {
   $("#mode-now").textContent = (s.dry_run ? "Dry run · " : "") +
     (monitor ? "Monitoring" : auto ? "Automatic" : `${cap(s.settings.mode)} · ${s.applied_speed} %`);
 
-  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(s.reason)}. The BMC is controlling the fans.`] : null;
+  const alert = s.error ? ["BMC", s.error] : s.failsafe ? ["Failsafe", `${cap(translate(s.reason))}. ${translate("The BMC is controlling the fans.")}`]
+    : s.following === false ? ["Fans", "Their RPM does not match the speed set: the BMC seems to have taken them back. Fan Control keeps taking them again."]
+    : null;
   $("#alert").classList.toggle("show", !!alert);
   // written only when it changes: the box is a live region, read out again on every write
   if (alert && $("#alert-msg").dataset.en !== alert[1]) {
@@ -243,7 +257,7 @@ function renderServer() {
   $("#v-cpu").innerHTML = unit(tv(s.cpu_temp), tu());
   $("#v-cpu").classList.toggle("hot", s.cpu_temp != null && s.cpu_temp >= fs - 5);
   $("#cpu-name").textContent = cpus.length > 1 ? cpus.map(c => `${c.name.replace("CPU ", "#")} ${fmt(tv(c.value))}°`).join(" · ") : "";
-  $("#s-cpu").textContent = s.cpu_temp == null ? "" : monitor ? (cpus[0]?.name || "") : `${fmt(td(fs - s.cpu_temp))} ${tu()} below failsafe`;
+  $("#s-cpu").textContent = s.cpu_temp == null ? "" : monitor ? (cpus[0]?.name || "") : fs - s.cpu_temp >= 0 ? `${fmt(td(fs - s.cpu_temp))} ${tu()} below failsafe` : `${fmt(td(s.cpu_temp - fs))} ${tu()} over failsafe`;
   $("#v-speed").innerHTML = monitor ? unit(avgPct, "%") : auto ? "Auto" : unit(s.applied_speed, "%");
   $("#s-speed").textContent = monitor ? "set by the BMC" : cap(translate(s.reason));
   $("#lbl-fanavg").textContent = rpms.length ? "Average speed" : "Fans reporting";
@@ -273,8 +287,19 @@ function renderServer() {
     const pct = f.rpm != null ? f.rpm / maxRpm * 100 : f.pct;
     return `<tr><td>${esc(f.name)}${f.ok ? "" : ' <span class="muted">· alert</span>'}</td>
     <td class="bar"><div class="meter"><i style="width:${clamp(pct ?? 0, 0, 100)}%"></i></div></td>
-    <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}</td></tr>`;
+    <td class="r">${f.rpm != null ? f.rpm.toLocaleString() : f.pct}${f.floor ? `<small class="muted" title="${translate("BMC minimum")}"> / ≥${Math.round(f.floor)}</small>` : ""}</td></tr>`;
   }).join("") || '<tr class="empty"><td colspan="3">No readings</td></tr>';
+  renderCalib();
+  if (bpFor !== s.id) {  // read once per server: it takes the iDRAC a moment
+    bpFor = s.id;
+    $("#bmc-profile").hidden = true;
+    if (s.driver === "redfish") loadBmcProfile();
+  }
+  const handed = s.handed_until > Date.now() / 1000;
+  $("#ho-text").textContent = handed ? `The BMC has the fans until ${time(s.handed_until)}.` : "Hand the fans to the BMC for";
+  $("#ho-btns").hidden = handed;
+  $("#ho-end").hidden = !handed;
+  $("#csv").href = `/api/history.csv?server=${encodeURIComponent(s.id)}&seconds=${range}`;
   $("#temp-count").textContent = sens.temps.length ? `${sens.temps.length} sensors` : "";
   const pos = v => clamp((v - T_MIN) / (T_MAX - T_MIN) * 100, 2, 100);
   $("#temps").innerHTML = sens.temps.map(t => {
@@ -301,6 +326,7 @@ function renderServer() {
     renderControls();
   }
   $("#legend-auto").hidden = monitor;
+  $("#legend-target").hidden = !s.history.some(p => p.target != null);
   renderChart();
 }
 
@@ -338,6 +364,15 @@ function renderControls() {
   if (document.activeElement !== $("#failsafe")) $("#failsafe").value = Math.round(tv(draft.failsafe_temp));
   if (document.activeElement !== $("#ramp")) $("#ramp").value = draft.ramp_down_seconds;
   if (document.activeElement !== $("#min-speed")) $("#min-speed").value = draft.min_speed;
+  // quiet hours and the schedule run on the server's clock: say so when it is not the browser's
+  const off = server?.clock?.offset, mine = -new Date().getTimezoneOffset();
+  const theirs = off && (off[0] === "-" ? -1 : 1) * (+off.slice(1, 3) * 60 + +off.slice(3, 5));
+  $("#clock-warn").hidden = theirs == null || theirs === mine;
+  if (theirs != null && theirs !== mine)
+    $("#clock-warn").textContent = `These follow the server's clock, now ${server.clock.time} (UTC${off.slice(0, 3)}:${off.slice(3)}). Set TZ in the compose file if that is not your time.`;
+  const warn = minSpeedWarning();
+  $("#min-warn").hidden = !warn;
+  if ($("#min-warn").dataset.en !== warn) { $("#min-warn").textContent = warn; $("#min-warn").dataset.en = warn; }
   if (document.activeElement !== $("#exhaust-limit")) $("#exhaust-limit").value = draft.exhaust_limit == null ? "" : Math.round(tv(draft.exhaust_limit));
   $("#margin-text").textContent = fmt(td(draft.threshold_margin));
   $$("#bmc-thr button").forEach(b => b.setAttribute("aria-pressed", b.dataset.thr === String(draft.bmc_thresholds)));
@@ -360,7 +395,7 @@ const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satu
 function renderSchedule() {
   const box = $("#sched");
   if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;  // don't redraw under the cursor
-  box.innerHTML = draft.schedule.map((p, i) => `<div class="prof" data-i="${i}">
+  setHTML(box, draft.schedule.map((p, i) => `<div class="prof" data-i="${i}">
       <input class="p-name" data-k="name" value="${esc(p.name)}" maxlength="30" aria-label="Profile name">
       <span class="days">${DAY_NAMES.map((d, n) => `<button type="button" data-day="${n}" aria-pressed="${p.days.includes(n)}" title="${translate(d)}">${translate(d)[0]}</button>`).join("")}</span>
       <input type="time" data-k="start" value="${p.start}" aria-label="Start"> –
@@ -368,7 +403,7 @@ function renderSchedule() {
       <span class="num">max <input type="number" data-k="max_speed" min="0" max="100" value="${p.max_speed ?? ""}" placeholder="—" aria-label="Maximum speed"><span class="muted">%</span></span>
       <span class="num">${translate("target")} <input type="number" data-k="smart_target" value="${p.smart_target == null ? "" : Math.round(tv(p.smart_target))}" placeholder="—" aria-label="Smart target"><span class="muted">${tu()}</span></span>
       <button type="button" class="inline-btn" data-del aria-label="Remove profile">×</button>
-    </div>`).join("") + (draft.schedule.length < 8 ? `<button type="button" class="inline-btn" id="sched-add">${translate("Add a profile")}</button>` : "");
+    </div>`).join("") + (draft.schedule.length < 8 ? `<button type="button" class="inline-btn" id="sched-add">${translate("Add a profile")}</button>` : ""));
 }
 $("#sched").addEventListener("click", e => {
   if (e.target.id === "sched-add") {
@@ -404,7 +439,27 @@ $("#sched").addEventListener("input", e => {
 function touch() { dirty = true; renderControls(); }
 
 // smart mode: what it is doing now, and the map it has learned of this server
+// How smart mode is doing, from the readings of the last hours: is it holding the target, and calmly?
+function smartReport() {
+  const pts = (server?.history || []).filter(p => p.target != null && p.cpu != null);
+  // the time in smart mode only: gaps (another mode in between) do not count
+  const gap = 2 * (server.interval || 15);
+  const hours = pts.reduce((h, p, i) => i && p.t - pts[i - 1].t <= gap ? h + (p.t - pts[i - 1].t) / 3600 : h, 0);
+  if (pts.length < 20 || hours < 0.25) return "";
+  const within = pts.filter(p => Math.abs(p.cpu - p.target) <= 2).length / pts.length;
+  const speeds = pts.map(p => p.speed).filter(v => v != null);
+  let turns = 0, dir = 0;
+  for (let i = 1; i < speeds.length; i++) {
+    const d = Math.sign(speeds[i] - speeds[i - 1]);
+    if (d && d !== dir) { if (dir) turns++; dir = d; }
+  }
+  const avg = speeds.length ? speeds.reduce((a, b) => a + b) / speeds.length : 0;
+  return `Last ${fmt(hours, 1)} h in smart mode: CPU within ${fmt(td(2))} ${tu()} of the target ${Math.round(within * 100)} % ` +
+    `of the time, fans at ${Math.round(avg)} % on average, ${fmt(turns / hours, 1)} changes of direction an hour.`;
+}
+
 function renderSmart() {
+  $("#smart-report").textContent = smartReport();
   const sm = server?.smart, active = sm && server.effective === "manual";
   $("#smart-live").textContent = active ? `Now ${server.applied_speed} % · ${server.reason.replace(/^smart: /, "")}` : "";
   const trend = sm ? `Trend ${sm.trend >= 0 ? "+" : ""}${fmt(td(sm.trend), 1)} ${tu()}/min · ` : "";
@@ -431,10 +486,216 @@ function renderSmart() {
 $("#smart-forget").onclick = async () => {
   if (!confirm(translate("Forget what smart mode learned about this server? It learns again as it runs."))) return;
   const r = await api("/api/smart/forget?server=" + encodeURIComponent(server.id), {});
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not forget", true);
+  if (!r.ok) return toast(await failure(r), true);
   server.smart_map = [];
   renderSmart();
   toast("Smart mode starts learning afresh");
+};
+
+// The minimum speed against each fan's BMC minimum, from what the calibration measured: under it the
+// BMC logs an event, lights the amber LED and may run every fan at full speed.
+function minSpeedWarning() {
+  const c = server?.calibration, p = draft.min_speed;
+  const res = (c?.results || []).slice().sort((a, b) => a.pct - b.pct);
+  for (const f of (server?.sensors?.fans || []).filter(f => f.floor)) {
+    const pts = res.filter(r => r.fans?.[f.name] != null).map(r => [r.pct, r.fans[f.name]]);
+    if (pts.length < 2) continue;
+    if (p < pts[0][0]) {
+      if (/BMC minimum/.test(c.reason || "")) return `Below ${pts[0][0]} % ${f.name} nears its BMC minimum of ${Math.round(f.floor)} RPM.`;
+      continue;
+    }
+    const i = Math.max(1, pts.findIndex(q => q[0] >= p));
+    const [[p0, r0], [p1, r1]] = [pts[i - 1], pts[i]];
+    const rpm = Math.round(p1 === p0 ? r1 : r0 + (r1 - r0) * (p - p0) / (p1 - p0));
+    if (rpm < f.floor) return `At ${p} % ${f.name} would turn about ${rpm} RPM, under its BMC minimum of ${Math.round(f.floor)} RPM: the BMC may raise an alarm and run every fan at full speed.`;
+  }
+  return "";
+}
+
+// Earlier settings: what changed each time, by whom, and a way back (into the draft, applied as usual)
+const CHANGE_LABELS = { mode: "mode", fixed_speed: "fixed speed", curve: "curve", curve_source: "curve sensor",
+  smart_target: "smart target", failsafe_temp: "CPU failsafe", min_speed: "minimum speed", exhaust_limit: "exhaust limit",
+  bmc_thresholds: "BMC thresholds", threshold_margin: "threshold margin", ramp_down_seconds: "ramp-down delay",
+  quiet: "quiet hours", schedule: "schedule", dry_run: "dry run", pcie_cooling: "PCIe cooling" };
+let changes = [];
+async function loadChanges() {
+  const box = $("#changes-list");
+  const r = await api("/api/settings/history?server=" + encodeURIComponent(server.id)).catch(() => null);
+  if (!r?.ok) { box.innerHTML = `<p class="hint">${esc(r ? await failure(r) : translate("Fan Control did not answer"))}</p>`; return; }
+  changes = (await r.json()).changes;
+  box.innerHTML = !changes.length ? `<p class="hint">${translate("Nothing saved yet.")}</p>` : `<table><tbody>${changes.map((c, i) => {
+    const before = changes[i + 1]?.settings;
+    const what = before ? Object.keys(CHANGE_LABELS).filter(k => JSON.stringify(c.settings[k]) !== JSON.stringify(before[k]))
+      .map(k => translate(CHANGE_LABELS[k])) : [translate("the oldest kept")];
+    return `<tr><td class="mono">${new Date(c.t * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</td>
+      <td>${esc(what.join(", ") || translate("nothing changed"))}<br><small class="muted">${esc(c.who || "")}</small></td>
+      <td class="r"><button class="inline-btn" data-load="${i}">${translate("Load")}</button></td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+$("#changes").addEventListener("toggle", e => { if (e.target.open) loadChanges(); });
+$("#changes-list").addEventListener("click", e => {
+  const b = e.target.closest("[data-load]");
+  if (!b) return;
+  draft = { ...structuredClone(draft), ...structuredClone(changes[+b.dataset.load].settings) };
+  touch();
+  toast("Earlier settings loaded. Apply to use them");
+});
+
+// The BMC's System Event Log, read when opened: a full one stops recording, and low fan speeds land in it
+async function loadSel() {
+  const box = $("#sel-body");
+  box.innerHTML = `<p class="hint">${translate("Reading the BMC…")}</p>`;
+  const r = await api("/api/sel?server=" + encodeURIComponent(server.id)).catch(() => null);
+  if (!r?.ok) { box.innerHTML = `<p class="hint">${esc(r ? await failure(r) : translate("Fan Control did not answer"))}</p>`; return; }
+  const d = await r.json(), full = d.used_pct >= 75;
+  box.innerHTML = `<p class="hint${full ? " full" : ""}">${d.used_pct == null ? `${d.entries ?? 0} entries` : `${d.entries} entries, ${d.used_pct} % full`}</p>` +
+    (full ? `<p class="hint full">${translate("A full log stops recording: clear it once you have read it.")}</p>` : "") +
+    (d.recent.length ? `<table><tbody>${d.recent.map(e => `<tr><td class="mono">${esc(e[1] || "")} ${esc(e[2] || "")}</td>
+      <td>${esc(e[3] || "")} · ${esc(e[4] || "")}${e[5] ? ` <span class="muted">${esc(e[5])}</span>` : ""}</td></tr>`).join("")}</tbody></table>` : "") +
+    `<div class="sel-actions"><button class="inline-btn" id="sel-again">${translate("Read again")}</button>
+     <button class="inline-btn" id="sel-clear">${translate("Clear the log")}</button></div>`;
+  $("#sel-again").onclick = loadSel;
+  $("#sel-clear").onclick = async () => {
+    if (!confirm(translate("Clear the BMC's event log? Its entries are gone for good; read them first."))) return;
+    const r = await api("/api/sel/clear?server=" + encodeURIComponent(server.id), {});
+    if (!r.ok) return toast(await failure(r), true);
+    toast("Event log cleared");
+    loadSel();
+  };
+}
+$("#sel").addEventListener("toggle", e => { if (e.target.open) loadSel(); });
+
+// What the fans themselves draw, from the calibration: the server's power at a fan RPM over its power at the slowest
+function fanWatts(c) {
+  const pts = (c?.results || []).filter(r => r.watts != null).map(r => [r.rpm, r.watts]).sort((a, b) => a[0] - b[0]);
+  if (pts.length < 2 || pts.at(-1)[1] - pts[0][1] < 5) return null;
+  return rpm => {
+    if (rpm <= pts[0][0]) return 0;
+    for (let i = 1; i < pts.length; i++) if (rpm <= pts[i][0]) {
+      const [r0, w0] = pts[i - 1], [r1, w1] = pts[i];
+      return Math.max(0, w0 - pts[0][1] + (w1 - w0) * (rpm - r0) / (r1 - r0));
+    }
+    return pts.at(-1)[1] - pts[0][1];
+  };
+}
+let week = { key: "", at: 0, pts: [] };  // 7 days of 5-minute averages, for the fan power comparison
+async function fanPower(c) {
+  const w = fanWatts(c), now = (server.history || []).filter(p => p.rpm != null);
+  if (!w || now.length < 20) return "";
+  const avg = now.reduce((a, p) => a + w(p.rpm), 0) / now.length;
+  let text = `Over the last ${fmt((now.at(-1).t - now[0].t) / 3600, 1)} h the fans drew about ${Math.round(avg)} W, ` +
+    `${fmt(avg * 24 * 30 / 1000, 1)} kWh a month at that rate.`;
+  if (week.key !== server.id || Date.now() - week.at > 600000) {
+    const r = await api(`/api/history?server=${encodeURIComponent(server.id)}&seconds=604800`).catch(() => null);
+    week = { key: server.id, at: Date.now(), pts: r?.ok ? (await r.json()).points : [] };
+  }
+  const mean = pts => pts.reduce((a, p) => a + w(p.rpm), 0) / pts.length;
+  const ours = week.pts.filter(p => p.rpm != null && p.speed != null), bmc = week.pts.filter(p => p.rpm != null && p.speed == null);
+  if (ours.length >= 12 && bmc.length >= 12)
+    text += ` ${translate(`In the last 7 days: about ${Math.round(mean(ours))} W while Fan Control had the fans, ${Math.round(mean(bmc))} W while the BMC had them.`)}`;
+  return text;
+}
+
+// Dell iDRAC 9 (3.34+) and iDRAC 10 over Redfish: no fan commands, but the iDRAC's own thermal settings
+const BP_LABELS = { ThermalProfile: "Thermal profile", FanSpeedOffset: "Fan speed offset",
+  ThirdPartyPCIFanResponse: "Extra cooling for third-party PCIe cards", MinimumFanSpeed: "Minimum fan speed" };
+const BP_VALUES = { ThermalProfile: ["Default Thermal Profile Settings", "Maximum Performance", "Minimum Power"],
+  FanSpeedOffset: ["Off", "Low", "Medium", "High", "Max"], ThirdPartyPCIFanResponse: ["Enabled", "Disabled"] };
+let bpFor = null;
+async function loadBmcProfile() {
+  const box = $("#bmc-profile"), id = server.id;
+  const r = await api("/api/bmc-profile?server=" + encodeURIComponent(id)).catch(() => null);
+  if (!r?.ok || server?.id !== id) { box.hidden = true; return; }
+  const p = await r.json();
+  box.hidden = false;
+  $("#bp-fields").innerHTML = Object.keys(BP_LABELS).filter(k => k in p).map(k => `<div class="f">
+      <label for="bp-${k}">${translate(BP_LABELS[k])}${k === "MinimumFanSpeed" && p.limits ? `<small>${p.limits[0]}–${p.limits[1]} %, ${translate("empty for the iDRAC's default")}</small>` : ""}</label>
+      ${k === "MinimumFanSpeed"
+        ? `<div class="num"><input type="number" id="bp-${k}" min="${p.limits?.[0] ?? 0}" max="${p.limits?.[1] ?? 100}" value="${p[k] === 255 ? "" : p[k]}"><span class="muted">%</span></div>`
+        : `<select id="bp-${k}">${[...new Set([...BP_VALUES[k], p[k]])].map(v => `<option${v === p[k] ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>`}
+    </div>`).join("");
+}
+$("#bp-apply").onclick = async () => {
+  const settings = {};
+  for (const k of Object.keys(BP_LABELS)) {
+    const el = $(`#bp-${k}`);
+    if (el) settings[k] = k === "MinimumFanSpeed" ? (el.value === "" ? 255 : +el.value) : el.value;
+  }
+  if (settings.ThirdPartyPCIFanResponse === "Disabled" && !confirm(translate("Cards the iDRAC does not know (HBAs, NICs, GPUs) then rely on the other settings for their cooling. Apply?"))) return;
+  $("#bp-apply").disabled = true;
+  try {
+    const r = await api("/api/bmc-profile?server=" + encodeURIComponent(server.id), { settings });
+    if (!r.ok) return toast(await failure(r), true);
+    toast("iDRAC thermal settings applied");
+    loadBmcProfile();
+  } finally {
+    $("#bp-apply").disabled = false;
+  }
+};
+
+// fan calibration: start it, follow it, and use what it found
+const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
+function renderCalib() {
+  const c = server.calibration, res = c?.results || [], running = c?.status === "running";
+  $("#calib").hidden = !server.control || !(server.sensors?.fans || []).some(f => f.rpm != null);
+  $("#calib-start").hidden = running;
+  $("#calib-stop").hidden = !running;
+  const use = !running && c?.suggested != null && c.suggested !== draft.min_speed;
+  $("#calib-use").hidden = !use;
+  if (use) $("#calib-use").textContent = `Use ${c.suggested} % as minimum speed`;
+  const when = c?.ended && new Date(c.ended * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+  $("#calib-text").textContent = !c ? CALIB_HELP
+    : running ? `Calibrating: step ${c.i + 1} of ${c.steps.length}, fans at ${c.steps[c.i]} %.`
+    : c.status === "done" ? (c.suggested == null ? `Calibrated on ${when}. No speed kept every fan turning.`
+      : `Calibrated on ${when}. ${c.floor > res.at(-1).pct ? `Below ${c.floor} % the fans turn no slower.` : "The fans slow down at every step."} Suggested minimum speed: ${c.suggested} %.`)
+    : `Stopped at ${c.at} %: ${c.reason}.` + (c.suggested != null ? ` Every fan kept turning down to ${c.suggested} %.` : "");
+  $("#calib-note").hidden = !(c?.status === "done" && c.reason);
+  if (c?.status === "done" && c.reason) $("#calib-note").textContent = `The calibration went no slower: ${c.reason}.`;
+  const power = !running && c?.fan_watts >= 5;  // under that, the readings' own noise
+  $("#calib-power").hidden = !power;
+  if (power) $("#calib-power").textContent = `At 100 % the fans draw about ${c.fan_watts} W more than at ${res.at(-1).pct} %.`;
+  if (power) fanPower(c).then(t => { $("#calib-use-power").hidden = !t; $("#calib-use-power").textContent = t; }).catch(() => {});
+  else $("#calib-use-power").hidden = true;
+  $("#calib-chart").hidden = res.length < 2;
+  if (res.length < 2) return;
+  // RPM by speed, measured; a hollow dot where a fan stood still
+  const W = 400, H = 140, pad = { l: 42, r: 12, t: 10, b: 22 };
+  const top = Math.ceil(Math.max(...res.map(r => r.rpm)) * 1.1 / 1000) * 1000;
+  const x = p => pad.l + p / 100 * (W - pad.l - pad.r), y = v => pad.t + (1 - v / top) * (H - pad.t - pad.b);
+  let g = "";
+  for (const v of [0, top / 2, top]) g += `<line class="g" x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}"/><text x="${pad.l - 6}" y="${y(v) + 3.5}" text-anchor="end">${v}</text>`;
+  for (const p of [0, 25, 50, 75, 100]) g += `<text x="${x(p)}" y="${H - 6}" text-anchor="middle">${p}</text>`;
+  const pts = [...res].sort((a, b) => a.pct - b.pct);
+  g += `<polyline class="line" points="${pts.map(r => `${x(r.pct).toFixed(1)},${y(r.rpm).toFixed(1)}`).join(" ")}"/>`;
+  g += pts.map(r => `<circle class="dot-pt${r.ok ? "" : " bad"}" cx="${x(r.pct).toFixed(1)}" cy="${y(r.rpm).toFixed(1)}" r="3"><title>${r.pct} %: ${r.rpm} RPM${r.watts != null ? `, ${r.watts} W` : ""}</title></circle>`).join("");
+  if (c.suggested != null) g += `<line class="fs" x1="${x(c.suggested)}" x2="${x(c.suggested)}" y1="${pad.t}" y2="${H - pad.b}"/>`;
+  $("#calib-svg").innerHTML = g;
+}
+$("#calib-start").onclick = async () => {
+  if (!confirm(translate("Calibrate the fans? They run from 100 % down to 0 % for about 6 minutes, loud at first."))) return;
+  const r = await api("/api/calibrate?server=" + encodeURIComponent(server.id), {});
+  if (!r.ok) return toast("Could not start: " + await failure(r), true);
+  toast("Calibration started");
+  setTimeout(pollServer, 800);
+};
+$("#calib-stop").onclick = async () => {
+  const r = await api("/api/calibrate?server=" + encodeURIComponent(server.id), { action: "stop" });
+  if (!r.ok) return toast(await failure(r), true);
+  setTimeout(pollServer, 800);
+};
+// maintenance, a stress test: the BMC keeps the fans for a while, then control comes back on its own
+async function handOver(minutes) {
+  const r = await api("/api/handover?server=" + encodeURIComponent(server.id), { minutes });
+  if (!r.ok) return toast(await failure(r), true);
+  toast(minutes ? "Fans handed to the BMC" : "Fans taken back");
+  setTimeout(pollServer, 800);
+}
+$$("[data-ho]").forEach(b => b.onclick = () => handOver(+b.dataset.ho));
+$("#ho-end").onclick = () => handOver(0);
+$("#calib-use").onclick = () => {
+  draft.min_speed = server.calibration.suggested;
+  touch();
+  toast(`Minimum speed set to ${draft.min_speed} %. Apply to use it`);
 };
 
 $$(".seg button").forEach(b => b.onclick = () => { draft.mode = b.dataset.mode; touch(); });
@@ -450,7 +711,7 @@ $$("[data-quiet]").forEach(b => b.onclick = () => { draft.quiet = { ...draft.qui
 $("#quiet-start").onchange = e => { if (e.target.value) { draft.quiet = { ...draft.quiet, start: e.target.value }; touch(); } };
 $("#quiet-end").onchange = e => { if (e.target.value) { draft.quiet = { ...draft.quiet, end: e.target.value }; touch(); } };
 $("#quiet-max").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 0 && v <= 100) { draft.quiet = { ...draft.quiet, max_speed: v }; touch(); } };
-$("#min-speed").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 10 && v <= 60) { draft.min_speed = v; touch(); } };
+$("#min-speed").oninput = e => { const v = +e.target.value; if (Number.isInteger(v) && v >= 0 && v <= 60) { draft.min_speed = v; touch(); } };
 $("#exhaust-limit").oninput = e => {
   const raw = e.target.value.trim(), v = fromT(+raw);
   if (raw === "") { draft.exhaust_limit = null; touch(); } else if (v >= 30 && v <= 90) { draft.exhaust_limit = v; touch(); }
@@ -478,10 +739,11 @@ $("#save").onclick = async () => {
   $("#save").disabled = true;
   try {
     const r = await api("/api/settings?server=" + encodeURIComponent(server.id), draft);
+    if (!r.ok) throw new Error(await failure(r));
     const body = await r.json();
-    if (!r.ok) throw new Error(body.error);
     dirty = false; draft = body;
     toast("Settings applied");
+    if ($("#changes").open) loadChanges();
     renderControls();
     setTimeout(pollServer, 1200);
   } catch (e) {
@@ -491,7 +753,7 @@ $("#save").onclick = async () => {
 };
 
 // A number outside its range is never dropped in silence: the field says what it accepts.
-$(".fields").addEventListener("input", e => {
+$("#control-body .fields").addEventListener("input", e => {
   const el = e.target;
   if (el.type !== "number") return;
   const bad = el.value !== "" && !el.checkValidity();
@@ -518,7 +780,7 @@ $$("[data-curve]").forEach(b => b.onclick = () => {
   draft.curve = CURVES[b.dataset.curve].map(p => [...p]);
   draft.mode = "curve";
   touch();
-  toast(`${b.textContent} curve loaded. Apply to use it`);
+  toast(`${cap(b.dataset.curve)} curve loaded. Apply to use it`);
 });
 $("#curve-copy").addEventListener("focus", () => {
   const others = (overview?.servers || []).filter(x => x.id !== server?.id && x.control);
@@ -545,17 +807,84 @@ const cy = v => P.t + (1 - v / 100) * (CH - P.t - P.b);
 const ct = x => T_MIN + (x - P.l) / (CW - P.l - P.r) * (T_MAX - T_MIN);
 const cs = y => 100 * (1 - (y - P.t) / (CH - P.t - P.b));
 
+// What the curve follows: the hottest CPU, the exhaust air or any temperature sensor (a GPU, a disk bay)
+function curveNow() {
+  const src = draft.curve_source, sens = server?.sensors;
+  if (!src) return server?.cpu_temp;
+  if (src === "exhaust") return sens?.exhaust;
+  const v = (sens?.temps || []).filter(t => t.name === src).map(t => t.value);
+  return v.length ? Math.max(...v) : null;
+}
+function renderCurveSource() {
+  const sel = $("#curve-src");
+  if (document.activeElement === sel) return;
+  const names = [...new Set((server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name))];
+  const src = draft.curve_source;
+  if (src && src !== "exhaust" && !names.includes(src)) names.push(src);
+  sel.innerHTML = `<option value="">${translate("Hottest CPU")}</option><option value="exhaust">${translate("Exhaust air")}</option>` +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}${curveNow() == null && n === src ? " " + translate("(no reading)") : ""}</option>`).join("");
+  sel.value = src || "";
+}
+$("#curve-src").onchange = e => { draft.curve_source = e.target.value || null; touch(); };
+
+// More curves on other sensors (a GPU, a disk shelf): the fans run at the highest any of them asks for.
+// Points are typed as temperature:speed pairs, in the unit on screen.
+const pointsText = c => c.map(([t, s]) => `${Math.round(tv(t))}:${s}`).join(" ");
+function parsePoints(text) {
+  const pts = text.trim().split(/[\s,;]+/).filter(Boolean).map(p => p.split(":").map(Number));
+  if (pts.length < 2 || pts.length > 10 || pts.some(p => p.length !== 2 || p.some(n => !Number.isFinite(n)) || p[1] < 0 || p[1] > 100)) return null;
+  return pts.map(([t, s]) => [Math.round(fromT(t)), Math.round(s)]).sort((a, b) => a[0] - b[0]);
+}
+function renderExtraCurves() {
+  const box = $("#extra-curves");
+  if (box.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) return;
+  const names = [...new Set((server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name))];
+  const extras = draft.extra_curves || [];
+  setHTML(box, extras.map((e, i) => `<div class="xc" data-i="${i}">
+      <span class="muted">${translate("Also")}</span>
+      <select data-k="source" aria-label="${translate("Sensor of extra curve")} ${i + 1}">
+        ${[...new Set(["exhaust", ...names, e.source])].map(n => `<option value="${esc(n)}"${n === e.source ? " selected" : ""}>${esc(n === "exhaust" ? translate("Exhaust air") : n)}</option>`).join("")}
+      </select>
+      <input data-k="curve" value="${esc(pointsText(e.curve))}" spellcheck="false" aria-label="${translate("Points of extra curve")} ${i + 1}" title="${translate("temperature:speed pairs, e.g. 50:20 85:90")}">
+      <button type="button" class="inline-btn" data-xdel aria-label="${translate("Remove extra curve")} ${i + 1}">×</button></div>`).join("") +
+    (extras.length < 3 ? `<div><button type="button" class="inline-btn" id="xc-add">${translate("Add a curve on another sensor")}</button></div>` : ""));
+}
+$("#extra-curves").addEventListener("click", e => {
+  if (e.target.id === "xc-add") {
+    const names = (server?.sensors?.temps || []).filter(t => !t.cpu).map(t => t.name);
+    draft.extra_curves = [...(draft.extra_curves || []), { source: names.find(n => /gpu|pci|disk|hdd|drive/i.test(n)) || "exhaust", curve: [[40, 20], [60, 50], [75, 100]] }];
+    touch();
+  } else if (e.target.closest("[data-xdel]")) {
+    draft.extra_curves = draft.extra_curves.filter((_, i) => i !== +e.target.closest(".xc").dataset.i);
+    touch();
+  }
+});
+$("#extra-curves").addEventListener("change", e => {
+  const row = e.target.closest(".xc");
+  if (!row) return;
+  const x = draft.extra_curves[+row.dataset.i];
+  if (e.target.dataset.k === "source") x.source = e.target.value;
+  else {
+    const pts = parsePoints(e.target.value);
+    if (!pts) return toast("Write temperature:speed pairs, e.g. 50:20 85:90", true);
+    x.curve = pts;
+  }
+  touch();
+});
+
 function renderCurve() {
+  renderCurveSource();
+  renderExtraCurves();
   const pts = [...draft.curve].sort((a, b) => a[0] - b[0]), fs = draft.failsafe_temp;
   let g = `<defs><pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line y2="5" stroke="var(--accent)" stroke-opacity=".25"/></pattern></defs>`;
   for (let v = 0; v <= 100; v += 25) g += `<line class="g" x1="${P.l}" x2="${CW - P.r}" y1="${cy(v)}" y2="${cy(v)}"/><text x="${P.l - 6}" y="${cy(v) + 3.5}" text-anchor="end">${v}</text>`;
   for (let t = 30; t <= 90; t += 10) g += `<text x="${cx(t)}" y="${CH - 8}" text-anchor="middle">${fmt(tv(t))}°</text>`;
-  g += `<rect x="${cx(fs)}" y="${P.t}" width="${Math.max(0, CW - P.r - cx(fs))}" height="${CH - P.t - P.b}" fill="url(#hatch)"/>
+  if (!draft.curve_source) g += `<rect x="${cx(fs)}" y="${P.t}" width="${Math.max(0, CW - P.r - cx(fs))}" height="${CH - P.t - P.b}" fill="url(#hatch)"/>
     <line class="fs" x1="${cx(fs)}" x2="${cx(fs)}" y1="${P.t}" y2="${CH - P.b}"/>
     <text class="fs-text" x="${cx(fs) - 4}" y="${P.t + 10}" text-anchor="end">Auto ≥ ${fmt(tv(fs))}°</text>`;
   const line = [[T_MIN, pts[0][1]], ...pts, [T_MAX, pts[pts.length - 1][1]]].map(([t, v]) => `${cx(t).toFixed(1)},${cy(v).toFixed(1)}`);
   g += `<polygon class="area" points="${cx(T_MIN)},${cy(0)} ${line.join(" ")} ${cx(T_MAX)},${cy(0)}"/><polyline class="line" points="${line.join(" ")}"/>`;
-  const now = server?.cpu_temp;
+  const now = curveNow();
   if (now != null) {
     const sp = curveSpeed(draft.curve, now);
     g += `<line class="now-l" x1="${cx(now)}" x2="${cx(now)}" y1="${cy(sp)}" y2="${CH - P.b}"/>
@@ -581,7 +910,7 @@ function renderCurve() {
 function renderCurvePoints() {
   const box = $("#curve-points");
   if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
-  box.innerHTML = draft.curve.map((p, i) => `<div class="cp" data-i="${i}">
+  setHTML(box, draft.curve.map((p, i) => `<div class="cp" data-i="${i}">
       <span class="num"><input type="number" data-k="0" value="${Math.round(tv(p[0]))}" min="${Math.round(tv(T_MIN))}" max="${Math.round(tv(T_MAX))}" step="1"
         aria-label="${translate("Point")} ${i + 1}: ${translate("temperature")}"><span class="muted">${tu()}</span></span>
       <span class="arrow" aria-hidden="true">→</span>
@@ -589,7 +918,7 @@ function renderCurvePoints() {
         aria-label="${translate("Point")} ${i + 1}: ${translate("fan speed")}"><span class="muted">%</span></span>
       <button type="button" class="inline-btn" data-del ${draft.curve.length <= 2 ? "disabled" : ""} aria-label="${translate("Remove point")} ${i + 1}">×</button>
     </div>`).join("") +
-    (draft.curve.length < 10 ? `<button type="button" class="inline-btn" id="cp-add">${translate("Add a point")}</button>` : "");
+    (draft.curve.length < 10 ? `<button type="button" class="inline-btn" id="cp-add">${translate("Add a point")}</button>` : ""));
 }
 let focusPoint = null;
 $("#curve-points").addEventListener("change", e => {
@@ -686,6 +1015,7 @@ $("#curve").addEventListener("dblclick", e => {
 $$(".tabs button").forEach(b => b.onclick = () => {
   range = +b.dataset.range;
   $$(".tabs button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  $("#csv").href = `/api/history.csv?server=${encodeURIComponent(server.id)}&seconds=${range}`;
   renderChart();
 });
 
@@ -704,7 +1034,7 @@ async function loadLong() {
 function renderChart() {
   if (!server) return;
   const isLong = range > 10800;
-  if (isLong) loadLong();  // cached; re-fetched every 5 minutes
+  if (isLong) loadLong().catch(() => {});  // cached, re-fetched every 5 minutes; offline, the banner says so
   const monitor = server.effective === "monitor" || !server.control, fanKey = monitor ? "fanpct" : "speed";
   const svg = $("#chart"), W = svg.clientWidth || 800, H = svg.clientHeight || 320;
   const pl = 36, pr = 40, pt = 10, pb = 26;
@@ -744,11 +1074,15 @@ function renderChart() {
     <path d="${path("exhaust", yT)}" fill="none" stroke="var(--ink-3)" stroke-width="1.25" stroke-dasharray="4 3"/>
     <path d="${path(fanKey, yS)}" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round"/>
     <path d="${path("cpu", yT)}" fill="none" stroke="var(--cool)" stroke-width="1.75" stroke-linejoin="round"/>
+    <path d="${path("target", yT)}" fill="none" stroke="var(--cool)" stroke-width="1" stroke-dasharray="2 4"/>
     <g id="cross" style="display:none"><line class="axis" y1="${pt}" y2="${H - pb}"/><circle r="3.5" fill="var(--cool)"/><circle r="3.5" fill="var(--accent)"/></g>`;
   if (!h.length) g += `<text x="${(W + pl - pr) / 2}" y="${H / 2}" text-anchor="middle">Collecting readings…</text>`;
+  // what happened, as ticks along the top (changes, failsafes, errors; not every speed step); hovering lists them
+  const marks = (server.events || []).filter(e => e.t >= start && !/^(Fans → |Dry run: )/.test(e.msg));
+  g += marks.map(e => `<line class="ev ${e.level}" x1="${x(e.t).toFixed(1)}" x2="${x(e.t).toFixed(1)}" y1="${pt}" y2="${pt + 9}"/>`).join("");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = g;
-  chart = { h, x, yT, yS, W, pl, pr, fanKey };
+  chart = { h, x, yT, yS, W, pl, pr, fanKey, marks };
   if (hoverX != null) showPoint(hoverX);  // a redraw every 5 s must not take the crosshair from under the pointer
 }
 
@@ -772,7 +1106,9 @@ function showPoint(mx) {
     <div><span>Exhaust</span><span>${fmt(tv(p.exhaust))} ${tu()}</span></div>
     <div><span>Fans</span><span>${fan == null ? "Automatic" : fan + " %"}</span></div>
     ${p.rpm != null ? `<div><span>Fan speed</span><span>${p.rpm.toLocaleString()} rpm</span></div>` : ""}
-    <div><span>Power</span><span>${fmt(p.watts)} W</span></div>`;
+    <div><span>Power</span><span>${fmt(p.watts)} W</span></div>
+    ${chart.marks.filter(e => Math.abs(chart.x(e.t) - mx) <= 8).slice(0, 3)
+      .map(e => `<div class="ev-line ${e.level}"><span>${time(e.t)}</span><span>${esc(e.msg)}</span></div>`).join("")}`;
   tip.style.display = "block";
   tip.style.left = (X > r.width / 2 ? X - tip.offsetWidth - 14 : X + 14) + "px";
 }
@@ -818,7 +1154,7 @@ function every(ms, fn) {
   const tick = async () => {
     if (!document.hidden && !busy) {
       busy = true;
-      try { await fn(); } finally { busy = false; }
+      try { await fn(); } catch (e) { console.error(e); } finally { busy = false; }  // one failure never stops it
     }
     setTimeout(tick, ms);
   };

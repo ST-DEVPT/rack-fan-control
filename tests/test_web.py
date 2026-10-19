@@ -134,6 +134,24 @@ class HTTP(Base):
         self.assertEqual(self.post("/api/settings?server=rack-b", {"fixed_speed": 500})[0], 400)
         self.assertEqual(self.req("POST", "/api/settings", {"mode": "auto"})[0], 401)
         self.assertEqual(self.post("/api/settings?server=rack-b", {"x": "y" * 20000})[0], 413)
+        self.assertEqual(self.post("/api/settings?server=rack-b", {"mode": "auto"},
+                                   headers={"Content-Type": "application/json; charset=utf-8"})[0], 200)
+
+    def test_a_failing_route_answers_500_not_a_dropped_connection(self):
+        # behind a reverse proxy a dropped connection is an opaque 502 with the cause nowhere
+        srv = SERVERS["rack-b"]
+
+        def broken(*_):
+            raise OSError(28, "No space left on device")
+        srv.save_settings = broken
+        try:
+            with self.assertLogs("fanctl.web", "ERROR") as logged:
+                st, _, data = self.post("/api/settings?server=rack-b", {"mode": "auto"})
+        finally:
+            del srv.save_settings
+        self.assertEqual(st, 500)
+        self.assertIn("No space left on device", json.loads(data)["error"])
+        self.assertIn("Traceback", "\n".join(logged.output))
 
     # ---- alerts
 
@@ -233,6 +251,14 @@ class HTTP(Base):
                 self.assertIn(r.status, (400, 413))
                 c.close()
 
+    def test_refusals_read_the_body_first(self):
+        # a refusal sent with the body still unread resets the connection: a proxy reports 502
+        for headers, status in (({"Content-Type": "text/plain"}, 415), ({"Origin": "http://evil.example"}, 403)):
+            with self.subTest(status=status):
+                st, _, data = self.req("POST", "/api/login", {"password": "x" * 5000}, headers)
+                self.assertEqual(st, status)
+                self.assertIn("error", json.loads(data))
+
     def test_backup_carries_the_smart_map(self):
         srv = SERVERS["rack-a"]
         srv.learned.update({"30": 41.0})
@@ -265,7 +291,7 @@ class HTTP(Base):
         st, h, _ = self.req("POST", "/api/login", {"password": "lookonly"})
         viewer = {"Cookie": h["Set-Cookie"].split(";")[0]}
         concrete = lambda p: (p.pattern.replace(r"\Z", "").replace("([a-z0-9-]+)", "rack-a")  # noqa: E731
-                              .replace("(/delete)?", "").replace("(.+)", "x"))
+                              .replace("(/delete)?", "").replace("(.+)", "x").replace(chr(92) + ".", "."))
         checked = 0
         for method, pattern, access, _ in web.ROUTES:
             if access == "public":
@@ -273,11 +299,101 @@ class HTTP(Base):
             path, body = concrete(pattern), ({} if method == "POST" else None)
             st = self.req(method, path, body)[0]
             self.assertIn(st, (303, 401), f"{method} {path} without a session")
-            if access == "admin":
+            if access in ("admin", "control"):
                 st = self.req(method, path, body, viewer)[0]
                 self.assertEqual(st, 403, f"{method} {path} as a viewer")
             checked += 1
         self.assertGreater(checked, 25)
+
+    def test_history_csv(self):
+        st, h, data = self.get("/api/history.csv?server=rack-a&seconds=3600")
+        self.assertEqual((st, h["Content-Type"]), (200, "text/csv; charset=utf-8"))
+        self.assertIn('filename="rack-a-history.csv"', h["Content-Disposition"])
+        rows = data.decode().splitlines()
+        self.assertEqual(rows[0].split(",")[:3], ["time", "cpu_c", "cpu_max_c"])
+        self.assertGreater(len(rows), 1)
+        self.assertEqual(self.get("/api/history.csv?server=rack-a&seconds=x")[0], 400)
+
+    def test_calibration_starts_and_stops(self):
+        srv = SERVERS["rack-a"]
+        try:
+            self.assertEqual(self.post("/api/calibrate?server=rack-a", {})[0], 200)
+            st, _, data = self.post("/api/calibrate?server=rack-a", {})
+            self.assertEqual((st, json.loads(data)["error"]), (409, "a calibration is already running"))
+            self.assertEqual(json.loads(self.get("/api/state?server=rack-a")[2])["calibration"]["status"], "running")
+            self.assertEqual(self.post("/api/calibrate?server=rack-a", {"action": "stop"})[0], 200)
+            c = json.loads(self.get("/api/state?server=rack-a")[2])["calibration"]
+            self.assertEqual(c["status"], "stopped")
+            self.assertTrue(c["reason"].startswith("stopped by admin at "))
+        finally:
+            srv.calib = None
+            srv.calib_file.unlink(missing_ok=True)
+
+    def test_control_token(self):
+        """Automations: read state, change fan settings, hand over; nothing an admin account guards."""
+        st, _, data = self.post("/api/tokens", {"name": "HA", "kind": "control"})
+        row = json.loads(data)
+        bearer = {"Authorization": "Bearer " + row["token"]}
+        try:
+            self.assertEqual(self.req("GET", "/api/state?server=rack-b", headers=bearer)[0], 200)
+            st, _, _ = self.req("POST", "/api/settings?server=rack-b", {"mode": "fixed", "fixed_speed": 41}, bearer)
+            self.assertEqual((st, SERVERS["rack-b"].settings()["fixed_speed"]), (200, 41))
+            self.assertTrue(any('by token "HA" at ' in e["msg"] for e in SERVERS["rack-b"].events))
+            self.assertEqual(self.req("POST", "/api/handover?server=rack-b", {"minutes": 0}, bearer)[0], 200)
+            full = SERVERS["rack-b"].settings()  # the whole settings back unchanged: fine
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-b", full, bearer)[0], 200)
+            for weaker in ({"failsafe_temp": 90}, {"exhaust_limit": None}, {"bmc_thresholds": False},
+                           {"min_speed": 10}, {"pcie_cooling": False}):
+                with self.subTest(weaker=weaker):
+                    st, _, data = self.req("POST", "/api/settings?server=rack-b", weaker, bearer)
+                    self.assertEqual(st, 403)
+                    self.assertIn("an admin can", json.loads(data)["error"])
+            self.assertEqual(SERVERS["rack-b"].settings()["failsafe_temp"], full["failsafe_temp"])
+            for method, path in (("GET", "/api/servers/rack-b"), ("GET", "/api/export"), ("POST", "/api/tokens"),
+                                 ("POST", "/api/alerts"), ("POST", "/api/calibrate?server=rack-b"),
+                                 ("POST", "/api/servers/rack-b/delete")):
+                with self.subTest(path=path):
+                    self.assertIn(self.req(method, path, {} if method == "POST" else None, bearer)[0], (401, 403))
+            self.assertEqual(self.req("GET", "/api/state", headers={"Authorization": "Bearer fc_wrong"})[0], 401)
+            st, _, data = self.post("/api/tokens", {"name": "W", "kind": "widget"})
+            widget = json.loads(data)
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-b", {"mode": "auto"},
+                                      {"Authorization": "Bearer " + widget["token"]})[0], 401)  # read-only kind
+            self.post("/api/tokens/revoke", {"id": widget["id"]})
+        finally:
+            self.post("/api/tokens/revoke", {"id": row["id"]})
+        self.assertEqual(self.req("GET", "/api/state?server=rack-b", headers=bearer)[0], 401)  # revoked
+
+    def test_settings_history(self):
+        for speed in (31, 32):
+            self.post("/api/settings?server=rack-b", {"mode": "fixed", "fixed_speed": speed})
+        st, _, data = self.get("/api/settings/history?server=rack-b")
+        changes = json.loads(data)["changes"]
+        self.assertEqual(st, 200)
+        self.assertEqual([c["settings"]["fixed_speed"] for c in changes[:2]], [32, 31])  # newest first
+        self.assertTrue(changes[0]["who"].startswith("admin at "))
+        self.assertLessEqual(len(changes), SERVERS["rack-b"].CHANGES_KEPT)
+
+    def test_bmc_event_log(self):
+        st, _, data = self.get("/api/sel?server=rack-a")
+        sel = json.loads(data)
+        self.assertEqual((st, sel["used_pct"], sel["entries"]), (200, 1, 3))
+        self.assertEqual(sel["recent"][0][:2], ["3", "10/15/2026"])  # newest first
+        self.assertEqual(self.post("/api/sel/clear?server=rack-a", {})[0], 200)
+        self.assertIn("BMC event log cleared by admin", SERVERS["rack-a"].events[0]["msg"])
+
+    def test_handover(self):
+        srv = SERVERS["rack-a"]
+        try:
+            st, _, data = self.post("/api/handover?server=rack-a", {"minutes": 60})
+            self.assertEqual(st, 200)
+            self.assertAlmostEqual(json.loads(data)["handed_until"], time.time() + 3600, delta=5)
+            self.assertIsNotNone(json.loads(self.get("/api/state?server=rack-a")[2])["handed_until"])
+            for bad in (-1, 99999, "60", 1.5):
+                self.assertEqual(self.post("/api/handover?server=rack-a", {"minutes": bad})[0], 400)
+            self.assertEqual(json.loads(self.post("/api/handover?server=rack-a", {"minutes": 0})[2])["handed_until"], None)
+        finally:
+            srv.hand_over(0)
 
     def test_viewers_cannot_read_bmc_accounts(self):
         st, h, _ = self.req("POST", "/api/login", {"password": "lookonly"})
@@ -332,7 +448,7 @@ class HTTP(Base):
             srv.state["error"] = None
         real_thread, real_tick = srv.thread, srv.tick
         srv.thread = type("T", (), {"is_alive": lambda self: True})()
-        srv.tick = 0
+        srv.tick = time.monotonic() - 10_000
         try:
             st, _, data = self.req("GET", "/livez")
             self.assertEqual((st, json.loads(data)["stalled"]), (503, ["rack-a"]))
@@ -398,7 +514,14 @@ class HTTP(Base):
         st, _, data = self.get("/api/servers/lab-box")
         self.assertTrue(json.loads(data)["has_password"])
         self.assertNotIn("s3cret", data.decode())
-        self.assertEqual(self.post("/api/servers/rack-a", {"name": "x"})[0], 409)  # environment servers are read-only
+        # a compose server: edited here, kept as an override, reset back; never removed from here
+        st, _, data = self.post("/api/servers/rack-a", {"name": "Rack A edited", "driver": "demo"})
+        self.assertEqual((st, json.loads(data)["source"], SERVERS["rack-a"].name), (200, "override", "Rack A edited"))
+        row = next(r for r in json.loads(server.SERVERS_FILE.read_text()) if r["id"] == "rack-a")
+        self.assertTrue(row["overrides"])
+        st, _, data = self.post("/api/servers/rack-a/delete")
+        self.assertEqual((st, json.loads(data)["source"], SERVERS["rack-a"].name), (200, "environment", "Rack A"))
+        self.assertEqual(self.post("/api/servers/rack-a/delete")[0], 409)
         self.assertEqual(self.post("/api/servers/lab-box/delete")[0], 200)
         self.assertNotIn("lab-box", SERVERS)
         self.assertEqual(self.post("/api/servers/lab-box-2/delete")[0], 200)
@@ -529,3 +652,76 @@ class Scan(Base):
         self.assertEqual((st, [f["host"] for f in json.loads(data)["found"]]), (200, ["10.0.0.2"]))
         self.assertEqual(self.post("/api/servers/scan", {"range": "1.1.1.0/24"})[0], 400)
         self.assertEqual(self.req("POST", "/api/servers/scan", {"range": "10.0.0.0/30"})[0], 401)
+
+
+class Busy(unittest.TestCase):
+    def test_a_full_server_answers_503_instead_of_dropping_the_connection(self):
+        import app
+        httpd = app.BoundedServer(("127.0.0.1", 0), web.Handler)
+        httpd.WAIT = 0.2
+        httpd.slots = threading.BoundedSemaphore(1)
+        httpd.slots.acquire()  # every slot taken by slow requests
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+            c.request("GET", "/healthz")
+            r = c.getresponse()
+            self.assertEqual((r.status, r.getheader("Retry-After")), (503, "5"))
+            self.assertIn("try again", json.loads(r.read())["error"])
+            c.close()
+        finally:
+            httpd.slots.release()
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class Hardening(Base):
+    def test_without_a_password_only_local_host_names(self):
+        real, config.WEB_PASSWORD = config.WEB_PASSWORD, ""
+        try:
+            self.assertEqual(self.req("GET", "/api/overview", headers={"Host": "evil.example.com"})[0], 403)  # DNS rebinding
+            for host in ("192.168.1.6:8080", "localhost:8080", "fans", "fans.lan", "[fd00::1]:8080"):
+                self.assertEqual(self.req("GET", "/api/overview", headers={"Host": host})[0], 200, host)
+            config.ALLOWED_HOSTS.add("fan.example.com")
+            self.assertEqual(self.req("GET", "/api/overview", headers={"Host": "fan.example.com"})[0], 200)
+        finally:
+            config.WEB_PASSWORD = real
+            config.ALLOWED_HOSTS.discard("fan.example.com")
+
+    def test_nested_json_is_a_400(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=5)
+        c.request("POST", "/api/login", b"[" * 5000, {"Content-Type": "application/json"})
+        self.assertEqual(c.getresponse().status, 400)
+
+    def test_one_event_log_read_at_a_time(self):
+        lock = web.SEL_LOCKS.setdefault("rack-a", threading.Lock())
+        lock.acquire()
+        try:
+            self.assertEqual(self.get("/api/sel?server=rack-a&fresh=1")[0], 429)
+        finally:
+            lock.release()
+
+    def test_reserved_ids_and_names(self):
+        from fanctl.server import unique_id, validate_server
+        self.assertEqual(unique_id("Test", set()), "test-server")
+        with self.assertRaises(ValueError):
+            validate_server({"driver": "demo", "name": 'x"\n  - platform: command_line'})
+
+
+class HostSensorPush(Base):
+    def test_a_sensor_token_pushes_and_does_nothing_else(self):
+        st, _, data = self.post("/api/tokens", {"name": "host", "kind": "sensor"})
+        row = json.loads(data)
+        bearer = {"Authorization": "Bearer " + row["token"]}
+        try:
+            body = {"temps": [{"name": "GPU0", "value": 55, "warn": 85}]}
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", body, bearer)[0], 200)
+            self.assertIn("GPU0", SERVERS["rack-a"].pushed)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", body)[0], 401)       # no token
+            self.assertEqual(self.req("GET", "/api/state?server=rack-a", headers=bearer)[0], 401)  # push only
+            self.assertEqual(self.req("POST", "/api/settings?server=rack-a", {"mode": "auto"}, bearer)[0], 401)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", {"temps": [{"name": "x", "value": 900}]}, bearer)[0], 400)
+            self.assertEqual(self.req("POST", "/api/sensors?server=rack-a", {"forget": True}, bearer)[0], 200)
+            self.assertEqual(SERVERS["rack-a"].pushed, {})
+        finally:
+            self.post("/api/tokens/revoke", {"id": row["id"]})

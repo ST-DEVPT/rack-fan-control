@@ -1,6 +1,6 @@
 """Backup and restore: servers added in the dashboard, every fan setting, alerts, widgets and what
-smart mode learned. Not included: history (it is not configuration), tokens and sessions (tokens are
-shown once by design; make new ones on the new machine)."""
+smart mode learned, fan calibrations. Not included: history (it is not configuration), tokens and
+sessions (tokens are shown once by design; make new ones on the new machine), settings history."""
 
 import time
 
@@ -31,7 +31,10 @@ def export_config(secrets_too=False):
             "settings": {s.id: s.settings() for s in list(SERVERS.values())}, "alerts": alerts_cfg,
             "widget": {"fields": widget_fields()},
             # what smart mode learned: days of steady running that should survive a move to another machine
-            "smart": {s.id: dict(s.learned) for s in list(SERVERS.values()) if s.learned}}
+            "smart": {s.id: dict(s.learned) for s in list(SERVERS.values()) if s.learned},
+            # the calibration tells what each speed should give: the check that the fans follow uses it
+            "calibration": {s.id: s.calib for s in list(SERVERS.values())
+                            if s.calib and s.calib.get("status") != "running"}}
 
 
 def import_config(data, who="import"):
@@ -79,6 +82,17 @@ def import_config(data, who="import"):
             with srv.lock:
                 srv.learned.update(validate_learned(learned))
             report["updated"].append(f"{srv.name} smart map")
+    for sid, calib in (data.get("calibration") or {}).items():
+        srv = SERVERS.get(sid)
+        if srv and isinstance(calib, dict) and isinstance(calib.get("results"), list) and calib.get("status") != "running":
+            from .config import write_json
+            with srv.lock:
+                srv.calib = calib
+            write_json(srv.calib_file, calib)
+            report["updated"].append(f"{srv.name} fan calibration")
+    if not data.get("with_secrets") and any("enter the BMC password" in s for s in report["skipped"]):
+        report["skipped"].append("servers without their passwords: add them again with the same names, then import "
+                                 "this file once more for their settings")
     if isinstance(data.get("widget"), dict):
         try:
             save_widget_fields(data["widget"].get("fields"))

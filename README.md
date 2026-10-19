@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
+  <a href="#quick-start"><b>Quick start</b></a> ·
   <a href="#supported-hardware">Hardware</a> ·
   <a href="#fan-control">How it works</a> ·
   <a href="#protection">Safety</a> ·
@@ -43,6 +43,17 @@ temperature you choose with as little fan as possible, and hands the fans back t
 is unknown: a missing reading, a sensor that disappears, a failed fan, a command the BMC ignores, a crash or
 a container stop. A watchdog restarts it if it stalls, and a small script on the host covers it being killed.
 
+## What a cron script cannot do
+
+| | `ipmitool` in cron | Fan Control |
+| --- | --- | --- |
+| The script or container dies | Fans stay low, nobody watching | Watchdog restarts it; the fans go back to the BMC on stop, crash (host guard) or stall |
+| The BMC quietly takes the fans back (host reboot, BMC reset) | Never noticed | Noticed by RPM, taken back, and you are told |
+| A GPU, HBA or disk gets hot | The CPU curve never sees it | Every BMC threshold watched; host GPU/disk temperatures can be pushed in |
+| A fan stops | Keeps the curve | Failsafe: the BMC takes over |
+| What speed is safe to set | Guesswork | **Calibration** measures every speed and each fan's BMC minimum |
+| Load spikes | Fans chase every one | **Smart mode** learns your server and rides out bursts |
+
 ## At a glance
 
 <p align="center"><img alt="A server's page: live readings and the last hour" src="docs/server.jpg"></p>
@@ -64,6 +75,13 @@ a container stop. A watchdog restarts it if it stalls, and a small script on the
 - **Every server in one place**: scan your network for BMCs, let each say what it is, test it, add it.
   Monitoring-only servers (any Redfish or IPMI BMC) get the same history, alerts and metrics.
 - **Quiet hours and schedules**: cap the fans at night, or by day and hour, without giving up protection.
+- **Fan calibration**: one button measures the RPM and the power draw at every speed and suggests the minimum
+  speed, staying clear of each fan's BMC minimum.
+- **Keeps hold of the fans**: checks that they turn as fast as the speed set should make them, and takes them
+  back when the BMC grabs them (a host reboot, a BMC reset).
+- **Automation**: Home Assistant, n8n, cron or Proxmox can change modes and hand the fans to the BMC with a
+  scoped token; a host script can add GPU and disk temperatures.
+- **Looks back**: event marks on the history chart, settings history with undo, the BMC's own event log, CSV.
 - **Alerts** on Discord, ntfy, Gotify or any webhook: failsafe, failed fan, ignored commands, a hot room.
 - **Prometheus metrics**, a **Grafana** dashboard, alert rules, and **Homarr** widgets that share only what
   you choose.
@@ -93,7 +111,7 @@ a container stop. A watchdog restarts it if it stalls, and a small script on the
 | **Dell PowerEdge (iDRAC)** | iDRAC 6, 7, 8, and iDRAC 9 up to firmware 3.30.30.30 | Yes | IPMI |
 | **Supermicro** | X10, X11 and X12 boards | Yes, experimental | IPMI |
 | **HPE iLO 4, unlocked firmware** | ProLiant Gen8 / Gen9 with the community-patched iLO 4 2.77 | Yes (caps over SSH), experimental | Redfish |
-| **Redfish** | HPE iLO 4 (2.30+), iLO 5, iLO 6, Lenovo XCC, Dell iDRAC 9, most recent BMCs | Monitoring only | Redfish |
+| **Redfish** | HPE iLO 4 (2.30+), iLO 5, iLO 6, Lenovo XCC, Dell iDRAC 9, most recent BMCs | Monitoring only; on Dell iDRAC 9/10, the iDRAC's own thermal settings (experimental) | Redfish |
 | **Other IPMI** | Any BMC with IPMI over LAN | Monitoring only | IPMI |
 | **Demo** | Simulated readings | Yes (simulated) | — |
 
@@ -156,13 +174,16 @@ Servers, fan settings and Discord are configured in the dashboard. The environme
 | `LOG_FORMAT` | text | `json` prints one JSON object per log line (time, level, logger, server, message) for Loki, Graylog and the like |
 | `UPDATE_CHECK` | `true` | Asks GitHub twice a day for the latest release, and shows it in the sidebar when it is newer. `false` turns it off |
 | `TRUST_PROXY` | off | Set to `true` behind a reverse proxy, so sign-in limits and the event log use `X-Forwarded-For` |
+| `ALLOWED_HOSTS` | (none) | Only without `WEB_PASSWORD`: host names the dashboard answers besides addresses, `localhost` and local names (`.lan`, `.local`, no dots), e.g. `fans.example.com`. A guard against DNS rebinding |
 | `TRUSTED_PROXIES` | loopback and Docker networks | Addresses or networks (comma separated) whose `X-Forwarded-For` is believed, e.g. `192.168.1.10` for a proxy on another machine |
 | `PORT` | `8080` | HTTP port inside the container |
 
 ### Servers in the environment
 
 Servers can also be declared in `docker-compose.yml`, for example to keep credentials in a `.env` file.
-They show up in the dashboard like the others, but can only be changed in the environment:
+They show up in the dashboard like the others. They can be edited there too: the change is kept in the
+dashboard and used instead of the compose file's values, until **Reset to the compose file** on its Edit page.
+They can only be removed from the compose file:
 
 ```yaml
     environment:
@@ -171,6 +192,7 @@ They show up in the dashboard like the others, but can only be changed in the en
       SERVER_1_HOST: 192.168.1.120       # "local" for IPMI from the server itself
       SERVER_1_USERNAME: root
       SERVER_1_PASSWORD: ${COMPUTE_BMC_PASSWORD}
+      # SERVER_1_IPMI_CIPHER: 3          # IPMI cipher suite, when the BMC refuses ipmitool's default
       SERVER_2_NAME: DL360
       SERVER_2_DRIVER: redfish
       SERVER_2_HOST: 192.168.1.121
@@ -191,6 +213,13 @@ The 1.x variables still work and keep their settings: `IDRAC_HOST`, `IDRAC_USERN
 | `history-<server>.json` | Three hours of readings, seven days of 5-minute averages, and the events |
 | `alerts.json` | Alert settings, including the Discord webhook and the ntfy, Gotify and webhook addresses and tokens (file mode 600, never sent to the browser) |
 | `smart-<server>.json` | What smart mode learned: the fan speed each heat load needs |
+| `sessions.json` | Sign-in sessions that were signed out before they expired (file mode 600) |
+| `redfish-pins.json` | The certificate each Redfish BMC showed first (trust on first use) |
+| `supermicro-<host>.json` | The fan mode a Supermicro BMC had before Fan Control, given back on release |
+| `*.corrupt-<time>` | A file that could not be read, kept aside for a look |
+| `calibration-<server>.json` | The last fan calibration: RPM and power draw at each speed |
+| `handover-<server>.json` | Until when the fans are handed to the BMC, while they are |
+| `changes-<server>.json` | The last 20 settings saved, with who saved them and when |
 | `widget.json` | Which fields widgets may show |
 | `tokens.json` | Widget and metrics tokens, as SHA-256 hashes (file mode 600) |
 | `report-state.json` | Which Discord message the status card is edited into |
@@ -205,7 +234,7 @@ For servers whose type has fan control (Dell, Supermicro, unlocked iLO 4):
 | --- | --- |
 | **Automatic** | The BMC runs its factory profile. Loudest, and the fallback for every problem |
 | **Fixed** | Every fan at one speed |
-| **Curve** | Speed follows the hottest CPU along points you drag. Start from a preset (quiet, balanced, cool, storage) or copy another server's curve |
+| **Curve** | Speed follows a temperature along points you drag: the hottest CPU, the exhaust air, or any sensor (a GPU, a disk bay). Up to 3 more curves on other sensors can be added, and the fans run at the highest any of them asks for. Start from a preset (quiet, balanced, cool, storage) or copy another server's curve. The CPU failsafe applies whichever it follows |
 | **Smart** | Holds the CPU at a target you set with as little fan as it can, learning what each load needs, and keeps every other sensor clear of its limits |
 
 ### Smart mode
@@ -229,7 +258,9 @@ is left out: no fan speed cools the room. It answers to whichever is worst, in f
   are ignored. At idle it rests on the minimum speed.
 
 When something heads for its trip point, smart mode **boosts** the fans by 25 % at once, so the BMC rarely
-has to take over. During quiet hours the cap gives way gradually from 8 °C below a trip point: louder fans
+has to take over. Under the learned map, the panel says how it has been doing over the last hours: how
+often the CPU was within 2 °C of the target, the average fan speed, and how often the fans changed
+direction; the history chart draws the target as a dotted line. During quiet hours the cap gives way gradually from 8 °C below a trip point: louder fans
 beat a failsafe.
 
 ### Protection
@@ -248,15 +279,39 @@ The BMC takes over, whatever the mode, when:
 
 Once a limit trips, the BMC keeps the fans for at least 5 minutes, and manual control resumes only when
 things are 3 °C below the limit, starting from 50 % and easing down; so the fans don't flap at the edge.
-Fans never run below the **minimum speed** (20 % by default, 10 % at the lowest: cards without a sensor,
-HBAs, NICs, NVMe drives and GPUs, are cooled by that airflow alone). Supermicro boards never go below 25 %,
-where their fans would read under the BMC's lower critical RPM. The failsafe can be set up to 90 °C.
+Fans never run below the **minimum speed**: 20 % by default, anything from 0 % up. Cards without a sensor
+(HBAs, NICs, NVMe drives, GPUs) are cooled by that airflow alone, so lowering it asks for confirmation, and a
+fan that stops while the others spin still trips the failsafe. Supermicro boards never go below 25 %, where
+their fans would read under the BMC's lower critical RPM. The failsafe can be set up to 90 °C.
+
+**Each fan's BMC minimum.** The BMC defines a lowest RPM for each fan (`ipmitool sensor`, or Redfish's lower
+thresholds); under it, it logs an event, lights the amber LED and often runs every fan at full speed. The fan
+list shows it next to each fan (`/ ≥600`). When a fan reads under it at the speed Fan Control sent, the fans
+stay 5 % above that speed from then on (until a restart), and the event log says so. The minimum speed field
+warns when the calibration shows a fan would turn under its minimum at that speed.
 
 When the controller hands a Supermicro back, the BMC gets the fan mode it had before (Standard,
 Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` every server is released at
 the same time; the example compose file gives it 60 s (`stop_grace_period`), where Docker's default is 10 s.
 
-**If the controller itself stops.** A control loop that stops turning for 3 minutes trips a watchdog:
+**If the BMC takes the fans back.** Some BMCs return to their own control without a word: an iDRAC 7 did
+while its host started, and then ignored the manual-mode command sent every cycle. So every time Fan
+Control takes the fans (when it starts, after a failsafe, a hand-over, a dry run or a refused command, on a
+change from automatic) it lets go and takes hold again: on Dell also looking for the fans afresh, on
+Supermicro switching to Full mode again, on iLO 4 re-sending the caps. It does the same when the host
+powers on and twice more while it starts up, and when the BMC answers again after a silence. And it checks, at a steady
+speed, that the fans turn as fast as that speed made them turn before (the calibration's measurements, or
+what it saw itself): when they do not, the page and the event log say so, the *fan commands ignored* alert
+goes out, `fanctl_fans_following` drops to 0, and it takes them back every 5 minutes until they follow. The
+BMC has them meanwhile, which is safe, so this is no failsafe.
+
+**If the BMC cannot be reached at all**, nothing can hand the fans back: a Dell or Supermicro BMC keeps the
+last manual speed until it is told otherwise. The page and the *BMC unreachable* alert say so at once, so keep
+the minimum speed one the server can live with for a while, and the BMC on a network path that does not
+fail with the one to the host. One failed reading is not enough (a busy BMC drops some): two in a row are.
+
+**If the controller itself stops.** A control loop that stops turning for 3 minutes (or 10 intervals,
+when longer) trips a watchdog:
 every fan goes back to its BMC and the process exits, so Docker's restart policy (`restart:
 unless-stopped`) starts a fresh one. The image's health check reads `/livez`, which follows the control
 loops and not the BMCs. What no process can cover is its own sudden death (`kill -9`, out of memory,
@@ -270,10 +325,14 @@ unlocked over SSH. A container that was removed on purpose is left alone.
 * * * * * /root/docker/fan-guard.sh >> /var/log/fan-guard.log 2>&1
 ```
 
-It reads the servers from the `.env` next to it (`chmod 600`; it refuses one others can write):
-`GUARD_SERVERS="R420 X11"`, then `R420_HOST`, `R420_USERNAME`, `R420_PASSWORD` and `R420_DRIVER`
-(`dell`, `supermicro` or `ilo4-unlocked`) for each. A single Dell server only needs the `IDRAC_HOST`,
-`IDRAC_USERNAME` and `IDRAC_PASSWORD` the compose file already uses.
+It reads the servers from the `.env` next to it (`chmod 600`; it refuses one the group or others can
+write), as plain `KEY=value` lines, never as shell code: the `SERVER_1_HOST`, `SERVER_1_USERNAME`,
+`SERVER_1_PASSWORD`, `SERVER_1_DRIVER`... of the compose file, the 1.x `IDRAC_HOST`..., or names of your
+own: `GUARD_SERVERS="R420 X11"`, then `R420_HOST`, `R420_USERNAME`, `R420_PASSWORD` and `R420_DRIVER`
+(`dell`, `supermicro` or `ilo4-unlocked`). **Servers added only in the dashboard must be listed there too**:
+with no server at all the guard logs it and fails, rather than guarding nothing in silence. Docker calls
+time out after 15 s, one run at a time, and a container that is running but *unhealthy* (a slow health
+check) is only acted on after 5 minutes.
 
 **Dry run** decides and logs what it would send ("Dry run: would set fans to 25%"), but leaves the fans
 to the BMC. Use it to try a new server type or a new curve.
@@ -290,6 +349,37 @@ still applies at any hour.
 example *Weekend*, Saturday and Sunday all day, at most 30 %; or *Office hours*, Monday to Friday 09:00 to
 18:00, smart target 55 °C. A profile from 22:00 to 06:00 runs into the next morning; 00:00 to 00:00 is the
 whole day. When several are in force, the lowest cap and the lowest target win, together with quiet hours.
+
+### Fan calibration
+
+**Calibrate fans**, under the server's fan list, finds what the minimum speed is best set to. It steps the
+fans from 100 % down to 0 % (12 steps, about 6 minutes, loud at first), measures each fan's RPM and the
+server's power draw at every step, and draws the curve. It then says below which speed the fans turn no
+slower (many fans have a floor of their own, so a lower setting only adds risk), the lowest speed at which
+every fan kept turning, and how many watts the fans cost at full speed; **Use N % as minimum speed** puts
+that into the settings. From the same measurements it estimates what the fans draw now (and in kWh a
+month), and over the last 7 days while Fan Control had them against while the BMC had them. Every protection stays on while it runs. The failsafe, a fan that stops, a BMC that
+ignores a command, the CPU warming by 10 °C, a dry run or a hand-over stop it, and the steps measured
+until then still count. It never takes a fan under its BMC minimum: it goes no slower once a fan is within
+15 % of it. Quiet hours do not cap it: it was started by hand. It needs fans that report RPM.
+
+### Earlier settings and the BMC's event log
+
+**Earlier settings**, under **Apply**, lists the last 20 settings saved for the server: when, by whom (an
+account and its address, or a control token's name) and what changed. **Load** puts one back in the panel,
+to check and apply like any change.
+
+**BMC event log**, under the events, reads the BMC's System Event Log when opened (IPMI servers: Dell,
+Supermicro and plain IPMI): how full it is and the last 25 entries, newest first. A full log stops
+recording, and fans run under their minimum show up there, so it is worth a look after lowering the
+minimum speed. An admin can clear it.
+
+### Handing the fans to the BMC for a while
+
+Under **Apply**: hand the fans to the BMC for 1, 4 or 12 hours, for maintenance, a firmware update or a
+stress test, and control comes back on its own at the end (or with **Take back now**). It is kept in the
+data folder, so a restart neither cuts it short nor makes it last for ever. The API takes any time up to a
+week: `POST /api/handover?server=<id>` with `{"minutes": 90}`, and `{"minutes": 0}` to take them back.
 
 ### A starting point
 
@@ -311,6 +401,11 @@ Webhook URL). Everything else is optional: bot name, avatar, footer, a colour pe
 each with its own title and message. A live preview shows the result and **Send test** posts it before you
 save. Text that comes from a BMC can never ping anyone.
 
+Each alert names its server and model at the top with an icon for its level (🔴 🟠 🟢 🔵), and under the
+message shows what is worth a glance: the CPU against its failsafe, the fans in % and RPM, the mode, the air
+in and out, the power draw, and for a failsafe or ignored command the reason. Give the **dashboard address**
+and every alert (and the status report) links to its server's page. ntfy, Gotify and the webhook get the same.
+
 | Event | Level | Sent when |
 | --- | --- | --- |
 | Failsafe reached | warning | A limit trips and the BMC takes over |
@@ -322,14 +417,17 @@ save. Text that comes from a BMC can never ping anyone.
 | Controller error | error | The control loop hits an unexpected error |
 | Failsafe lasting | error | The BMC has held the fans for longer than the set time (10 min by default) |
 | Fan failed | error | A fan stops while the others spin, or the BMC reports it failed (two readings in a row) |
-| Fan commands ignored | error | The speed moved by 20 points or more, and 30 s later the RPM had not followed |
+| Fan commands ignored | error | The speed moved by 20 points or more and the RPM did not follow, or at a steady speed the fans do not turn as that speed made them (the BMC took them back) |
 | Room running hot | warning | The inlet air passes its warning temperature (35 °C by default) |
 | Settings changed | info | Someone applies new settings (off by default) |
 | Controller started | info | The container starts (off by default) |
+| Fan calibration | info | A calibration finishes or stops, with what it found (off by default) |
+| Handed to the BMC | info | The fans are handed to the BMC for a while, or taken back (off by default) |
 | Status report | info | On a schedule (off by default) |
 
 Placeholders: `{server}` `{host}` `{model}` `{cpu}` `{speed}` `{mode}` `{reason}` `{error}` `{failsafe}`
-`{threshold}` `{interval}` `{time}`; status reports add `{period}` `{cpu_min}` `{cpu_avg}` `{cpu_max}`
+`{threshold}` `{interval}` `{time}` `{inlet}` `{exhaust}` `{watts}` `{rpm_now}`; calibrations add `{status}` `{result}`,
+hand-overs `{handover}` `{detail}`; status reports add `{period}` `{cpu_min}` `{cpu_avg}` `{cpu_max}`
 `{speed_avg}` `{power_avg}` `{dell_pct}`.
 
 The **status report** is one card per server: CPU, fans and power now, minimum, average and maximum over
@@ -349,6 +447,10 @@ on Discord only.
 ## Integrations
 
 Each has its own page in the sidebar, with the snippets filled in for your setup.
+
+**History as CSV**: the **CSV** button next to the chart's time range downloads that range for a
+spreadsheet: every reading up to 3 hours, 5-minute averages beyond (`GET /api/history.csv?server=<id>&seconds=86400`,
+any signed-in account).
 
 **Prometheus**: create a metrics token on the Prometheus page (or set `METRICS_TOKEN`); the page shows the
 scrape job to paste and the live `/metrics` output.
@@ -394,6 +496,29 @@ Dashboards → New → Import, and pick your Prometheus data source.
 
 <img alt="Embed widget" src="docs/embed.jpg" width="420">
 
+**Automation** (Home Assistant, n8n, cron, a script): on the Automation page, create a control token. It
+reads what a read-only account sees, changes the mode, speeds and targets, and hands the fans to the BMC.
+The protections (failsafe, exhaust limit, BMC thresholds, minimum speed, Dell's PCIe cooling) stay with an
+admin: a leaked token cannot weaken them. It never sees BMC accounts and cannot change servers, alerts,
+tokens or backups, and every change it makes is logged with its name. The page fills in `curl` examples and a Home Assistant `rest_command` and sensor for your servers.
+
+```bash
+curl -X POST -H "Authorization: Bearer <control token>" -H "Content-Type: application/json" \
+  -d '{"mode": "smart", "smart_target": 65}' "https://fans.example.lan/api/settings?server=r720"
+```
+
+Settings take only the fields sent; `POST /api/handover` takes `{"minutes": 120}` (`0` takes the fans back).
+**Host sensors**: temperatures the BMC cannot see (a GPU, the disks) can be sent by a script on the host
+with a *sensor* token, which can do nothing else: `POST /api/sensors?server=<id>` with
+`{"temps": [{"name": "GPU 0", "value": 61, "warn": 85}]}`, every minute (the Automation page has a script
+for NVIDIA GPUs and disks through `drivetemp`). They count like any sensor with a warning threshold: smart
+mode keeps them clear of it, the BMC takes over near it, and the curve can follow one. They never stand in
+for the CPU, so they can only add cooling, and one that stops arriving (2 minutes) hands the fans to the
+BMC; `{"forget": true}` stops using them.
+
+The page also has a **Proxmox** backup hook: saved as a `vzdump` hook script, it hands the fans to the BMC
+when a backup job starts and takes them back when it ends.
+
 ## Something wrong with your hardware?
 
 On a server's page, **Diagnostics** downloads what its BMC answers, raw (`ipmitool sdr`, `sensor`, `mc info`,
@@ -416,10 +541,11 @@ Details, and how to report a vulnerability, are in [SECURITY.md](SECURITY.md).
 
 ## Backup
 
-The **Backup** page downloads the servers added in the dashboard, every server's fan settings and the
-Discord configuration as one JSON file, and imports such a file on this or another machine. Passwords and
-the webhook are included only when you tick the box; a backup without them restores the settings, but
-servers have to be added again with their passwords.
+The **Backup** page downloads the servers added in the dashboard, every server's fan settings, the alerts,
+what smart mode learned and the fan calibrations as one JSON file, and imports such a file on this or
+another machine. Passwords and the webhook are included only when you tick the box. Without them, servers
+added in the dashboard cannot be created on import: add them again with the same names, then import the
+same file once more for their settings, map and calibration (the import report says so).
 
 ## Troubleshooting
 
@@ -429,13 +555,17 @@ Use **Test connection** (Edit on the server's page) to see the BMC's answer with
 | Message | Meaning |
 | --- | --- |
 | `rsp=0xc1` | The firmware does not have the fan commands (Dell iDRAC 9 3.34.34.34 or later): use the Redfish type |
-| `rsp=0xd4` | The BMC user is not an Administrator |
-| `Unable to establish IPMI v2 / RMCP+ session` | Wrong address or credentials, or IPMI over LAN is off |
+| `rsp=0xd4` | The BMC user is not an Administrator. On iDRAC 9 from firmware 3.34.34.34 an Administrator gets it too: the fan commands were removed, use the Redfish type |
+| `Unable to establish IPMI v2 / RMCP+ session` | Wrong address or credentials, IPMI over LAN is off, or a cipher suite the BMC cannot do: Fan Control tries suite 3 by itself, and the server's settings can fix one. An IPMI port other than 623 goes in the address, `10.0.0.5:6230` |
 | `Redfish ...: HTTP 401` | Wrong user name or password |
 | `Redfish ...: timed out` | The BMC is not reachable on HTTPS from the container |
 | `SSH: ... (is the iLO firmware unlocked?)` | The iLO answered, but does not have the `fan` command: stock firmware |
 | `... near its N°C warning threshold` | A sensor other than the CPU is hot; see the Temperatures table, where each bar marks its threshold |
 | `ERROR: cannot write to /data` (container log) | The data folder is not owned by uid 1000 |
+| `Fans at N RPM where X% gave M RPM before: the BMC seems to have taken them back` | The BMC runs the fans on its own although it accepts the commands. Fan Control takes them back every 5 minutes. If it lasts: is anything else sending fan commands to this BMC (a second Fan Control, a script in cron, OpenManage, an iDRAC thermal profile set by hand)? Two controllers fight. Otherwise, attach the Diagnostics file to an issue |
+| `Fan N reads 0 and has not turned since Fan Control started: taken as an empty bay` | Some BMCs list empty fan bays at 0 RPM. A fan that turned and then stops, or one the BMC reports as failed, still trips the failsafe |
+| Quiet hours or the schedule at the wrong time | They follow the container's clock: set `TZ` in the compose file. The panel says so when the container's time zone is not the browser's |
+| `The iDRAC refused the all-fans command; fans ... are set one by one` | An 11th-generation iDRAC, or one still starting with its host. Fan Control tries all fans again whenever it takes the fans back |
 
 ## Upgrading
 

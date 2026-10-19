@@ -123,6 +123,49 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
         s = parse_sdr(SDR, t)
         self.assertEqual([x["warn"] for x in s["temps"]], [42.0, 75.0, 85.0, 86.0])  # same-name CPUs keep their order
 
+    def test_event_log(self):
+        info = ("SEL Information\nVersion          : 1.5 (v1.5, v2 compliant)\nEntries          : 482\n"
+                "Free Space       : 8704 bytes\nPercent Used     : 47%\n")
+        elist = ("   1 | 08/02/2026 | 11:02:31 | Event Logging Disabled SEL | Log area reset/cleared | Asserted\n"
+                 " 1e2 | 10/15/2026 | 23:41:07 | Fan Fan1 RPM | Lower Critical going low  | Asserted\n")
+        sel = drivers.parse_sel(info, elist)
+        self.assertEqual((sel["used_pct"], sel["entries"]), (47, 482))
+        self.assertEqual(sel["recent"][0], ["1e2", "10/15/2026", "23:41:07", "Fan Fan1 RPM", "Lower Critical going low", "Asserted"])
+        self.assertIsNone(drivers.parse_sel("Percent Used     : unknown\n", "")["used_pct"])  # some BMCs do not say
+
+    def test_fan_floors(self):
+        floors = drivers.parse_fan_floors(self.SENSOR + "\nFan2 RPM | 3600.000 | RPM | ok | na | 360.000 | na | na | na | na")
+        self.assertEqual(floors, {"Fan1 RPM": [600.0], "Fan2 RPM": [360.0]})  # non-critical, else critical
+        self.assertEqual([f["floor"] for f in parse_sdr(SDR, None, floors)["fans"]], [600.0, 360.0])
+        _, fans, _ = parse_redfish({"Fans": [{"Name": "Fan1", "Reading": 5400, "ReadingUnits": "RPM",
+                                              "LowerThresholdCritical": 1080},
+                                             {"Name": "Fan2", "Reading": 30, "ReadingUnits": "Percent",
+                                              "LowerThresholdCritical": 10}]})
+        self.assertEqual([f["floor"] for f in fans], [1080.0, None])  # a percentage has no RPM floor
+
+    def test_ipmitool_exiting_1_after_the_list_still_gives_them(self):
+        # iDRACs print every sensor, then exit 1 over one they cannot read (an empty CPU socket's)
+        real = drivers.subprocess.run
+        drivers.subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 1, self.SENSOR, "Unable to read sensor Temp: Device Not Present") if "sensor" in cmd else \
+            subprocess.CompletedProcess(cmd, 0, SDR if "sdr" in cmd else "Chassis Power is on", "")
+        try:
+            d = drivers.DellDriver("10.0.0.9", "root", "calvin")
+            d.model = ""
+            d.read()
+            self.assertIsNone(d.thresholds)  # the first reading goes straight to the fans
+            s = d.read()
+        finally:
+            drivers.subprocess.run = real
+        self.assertEqual((d.thresholds["Temp"], d.thresholds_error), ([85.0, 86.0], ""))
+        self.assertEqual(s["temps"][0]["warn"], 42.0)
+        with self.assertRaises(DriverError):  # anything else still fails on an error
+            drivers.subprocess.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "partial", "Error")
+            try:
+                d.ipmi("sdr", "elist", "full")
+            finally:
+                drivers.subprocess.run = real
+
     def test_redfish(self):
         temps, _, _ = parse_redfish({"Temperatures": [
             {"Name": "PCI 1", "ReadingCelsius": 50, "UpperThresholdCritical": 100, "UpperThresholdFatal": 110},
@@ -132,6 +175,21 @@ Fan1 RPM         | 3720.000   | RPM        | ok    | na        | 360.000   | 600
 
 
 class Dell(unittest.TestCase):
+    def test_unknown_power_state(self):
+        d = FakeDell()
+        d.answer = lambda args: "Chassis Power is unknown" if args[:2] == ("chassis", "power") else SDR
+        self.assertIsNone(d.read()["power"])
+
+    def test_retake_lets_go_then_takes_hold_with_all_fans(self):
+        d = FakeDell()
+        d.set_speed(30)
+        self.assertEqual(d.fan_ids, [0, 1, 2, 3])                     # fell back to fans one by one
+        self.assertIn("set one by one", d.notice)
+        d.sent.clear()
+        d.retake(30)
+        self.assertEqual(d.sent[:3], [("raw", "0x30", "0x30", "0x01", "0x01"), ("raw", "0x30", "0x30", "0x01", "0x00"),
+                                      ("raw", "0x30", "0x30", "0x02", "0xff", "0x1e")])  # auto, manual, all fans again
+
     def test_per_fan_fallback(self):
         d = FakeDell()
         d.set_speed(30)
@@ -388,3 +446,115 @@ class Discovery(unittest.TestCase):
         self.assertEqual([f["host"] for f in found], ["10.0.0.1", "10.0.0.2"])
         self.assertEqual((found[0]["vendor"], found[0]["suggested"], found[0]["redfish"]), ("Hp", "redfish", True))
         self.assertEqual((found[1]["suggested"], found[1]["redfish"], found[1]["ipmi"]), ("ipmi", False, True))
+
+
+class Leaks(unittest.TestCase):
+    def test_a_timeout_does_not_carry_the_bmc_address_or_user(self):
+        real = drivers.subprocess.run
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        drivers.subprocess.run = slow
+        try:
+            with self.assertRaises(DriverError) as e:
+                drivers.DellDriver("10.0.0.9", "rootuser", "calvin").ipmi("sdr", "elist", "full")
+        finally:
+            drivers.subprocess.run = real
+        self.assertNotIn("10.0.0.9", str(e.exception))
+        self.assertNotIn("rootuser", str(e.exception))
+
+    def test_scans_stay_private(self):
+        with self.assertRaises(ValueError):
+            drivers.scan_targets("::ffff:8.8.8.0/120")
+
+
+class IpmiConnection(unittest.TestCase):
+    def run_with(self, answer, host="10.0.0.9:6230", cipher=None):
+        seen, real = [], drivers.subprocess.run
+
+        def fake(cmd, **kw):
+            seen.append(cmd)
+            return answer(cmd)
+        drivers.subprocess.run = fake
+        try:
+            d = drivers.DellDriver(host, "root", "calvin")
+            d.cipher = cipher
+            out = d.ipmi("chassis", "power", "status")
+        finally:
+            drivers.subprocess.run = real
+        return d, seen, out
+
+    def test_port_and_cipher_reach_ipmitool(self):
+        _, seen, _ = self.run_with(lambda cmd: subprocess.CompletedProcess(cmd, 0, "Chassis Power is on", ""), cipher=17)
+        self.assertEqual(seen[0][:12], ["ipmitool", "-I", "lanplus", "-H", "10.0.0.9", "-U", "root", "-E", "-p", "6230",
+                                         "-C", "17"])
+
+    def test_cipher_3_when_the_default_cannot_open_a_session(self):
+        def bmc(cmd):
+            ok = "-C" in cmd and cmd[cmd.index("-C") + 1] == "3"
+            return subprocess.CompletedProcess(cmd, 0 if ok else 1, "Chassis Power is on" if ok else "",
+                                               "" if ok else "Error: Unable to establish IPMI v2 / RMCP+ session")
+        d, seen, out = self.run_with(bmc, host="10.0.0.9")
+        self.assertEqual((len(seen), d.cipher, out), (2, 3, "Chassis Power is on"))
+        self.assertIn("cipher suite 3", d.notice)
+
+
+class ModernRedfish(unittest.TestCase):
+    """A BMC with ThermalSubsystem, Sensors and EnvironmentMetrics and no Thermal (OpenBMC, newer firmware)."""
+    TREE = {
+        "/redfish/v1/Chassis": {"Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]},
+        "/redfish/v1/Chassis/1": {"ThermalSubsystem": {"@odata.id": "/redfish/v1/Chassis/1/ThermalSubsystem"},
+                                  "Sensors": {"@odata.id": "/redfish/v1/Chassis/1/Sensors"},
+                                  "EnvironmentMetrics": {"@odata.id": "/redfish/v1/Chassis/1/EnvironmentMetrics"}},
+        "/redfish/v1/Systems": {"Members": [{"@odata.id": "/redfish/v1/Systems/1"}]},
+        "/redfish/v1/Systems/1": {"Model": "R760", "PowerState": "On"},
+        "/redfish/v1/Chassis/1/ThermalSubsystem/Fans?$expand=.($levels=1)": {"Members": [{"@odata.id": "/f/1"}]},
+        "/f/1": {"Name": "Fan 1", "SpeedPercent": {"Reading": 30, "SpeedRPM": 5400}, "Status": {"Health": "OK"}},
+        "/redfish/v1/Chassis/1/Sensors?$expand=.($levels=1)": {"Members": [
+            {"Name": "CPU1 Temp", "ReadingType": "Temperature", "Reading": 52, "PhysicalContext": "CPU",
+             "Thresholds": {"UpperCaution": {"Reading": 88}}},
+            {"Name": "PSU1 Power", "ReadingType": "Power", "Reading": 210}]},
+        "/redfish/v1/Chassis/1/EnvironmentMetrics": {"PowerWatts": {"Reading": 230}},
+    }
+
+    def test_read(self):
+        tree = self.TREE
+
+        class Modern(drivers.RedfishDriver):
+            def _get(self, path):
+                if path not in tree:
+                    raise DriverError(f"Redfish {path}: HTTP 404")
+                return tree[path]
+        d = Modern("10.0.0.9", "root", "calvin")
+        s = d.read()
+        self.assertEqual([(t["name"], t["value"], t["cpu"], t["warn"]) for t in s["temps"]], [("CPU1 Temp", 52.0, True, 88.0)])
+        self.assertEqual((s["fans"][0]["rpm"], s["watts"], s["power"]), (5400, 230, "on"))
+
+
+class DellThermalSettings(unittest.TestCase):
+    def driver(self):
+        state = {"Attributes": {"ThermalSettings.1.ThermalProfile": "Default Thermal Profile Settings",
+                                "ThermalSettings.1.FanSpeedOffset": "Low", "ThermalSettings.1.MinimumFanSpeed": 255,
+                                "ThermalSettings.1.MFSMinimumLimit": 9, "ThermalSettings.1.MFSMaximumLimit": 100}}
+        sent = []
+
+        class Dell9(drivers.RedfishDriver):
+            def _get(self, path, method="GET", body=None):
+                if method == "PATCH":
+                    sent.append(body)
+                    state["Attributes"].update(body["Attributes"])
+                    return {}
+                return state
+        return Dell9("10.0.0.9", "root", "calvin"), sent
+
+    def test_read_and_write_only_known_values(self):
+        d, sent = self.driver()
+        self.assertEqual(d.bmc_profile()["limits"], [9, 100])
+        self.assertNotIn("ThirdPartyPCIFanResponse", d.bmc_profile())    # not listed by this iDRAC: not offered
+        d.set_bmc_profile({"ThermalProfile": "Minimum Power", "FanSpeedOffset": "Low", "MinimumFanSpeed": 12})
+        self.assertEqual(sent, [{"Attributes": {"ThermalSettings.1.ThermalProfile": "Minimum Power",
+                                                "ThermalSettings.1.MinimumFanSpeed": 12}}])  # unchanged ones not sent
+        for bad in ({"ThermalProfile": "Silent"}, {"MinimumFanSpeed": 5}, {"ThirdPartyPCIFanResponse": "Disabled"},
+                    {"Something": 1}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                d.set_bmc_profile(bad)

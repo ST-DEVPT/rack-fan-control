@@ -1,10 +1,14 @@
 """Sign-in sessions and the HTTP server."""
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import re
+import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
@@ -13,14 +17,17 @@ from . import config, tokens, updates
 from .alerts import (ALERT_KINDS, CHANNELS, SAMPLE, alert_config, build_payload, build_report, post_webhook,
                      public_alert_config, save_alerts, send_channel, validate_alerts, webhook_of)
 from .backup import export_config, import_config
-from .config import DATA_DIR, INTERVAL, VERSION, WEB
+from .config import DATA_DIR, HISTORY_SECONDS, INTERVAL, VERSION, WEB
 from .control import validate_settings
-from .drivers import DRIVERS, DriverError, detect, forget_pin, scan
+from .drivers import DRIVERS, DriverError, bare_host, detect, forget_pin, scan
 from .metrics import metrics
-from .server import SERVERS, registry_lock, save_dashboard_servers, stalled, start, stop, unique_id, validate_server
+from .server import (SERVERS, env_servers, registry_lock, save_dashboard_servers, stalled, start, stop, unique_id,
+                     validate_server)
 from .widgets import WIDGET_FIELDS, homarr_widget, save_widget_fields, widget_fields, widget_view
 
 KEY = b""  # set by app.main() once the data folder is known to be writable
+# what stands between a mistake and a hot server: only an admin session changes these, never a control token
+PROTECTIONS = ("failsafe_temp", "exhaust_limit", "bmc_thresholds", "threshold_margin", "min_speed", "pcie_cooling")
 log = logging.getLogger("fanctl.web")
 
 # Sessions and sign-in throttling live in sessions.py; the names stay importable from here.
@@ -64,14 +71,19 @@ def diagnostics(srv):
     with srv.lock:
         state = {k: v for k, v in srv.state.items() if k != "smart_map"}
         events = list(srv.events)[:50]
-    if srv.host:  # "Started: ..., 10.0.0.5, every 15s", "Cannot read the BMC: 10.0.0.5 ..."
-        hide = lambda text: text.replace(srv.host, "<bmc>") if isinstance(text, str) else text  # noqa: E731
-        events = [{**e, "msg": hide(e["msg"])} for e in events]
-        state = {k: hide(v) for k, v in state.items()}
     try:
         raw = srv.driver.diagnose()
     except Exception as e:  # a diagnostics bug must still return what it has
         raw = {"error": repr(e)}
+    if srv.host:  # "Started: ..., 10.0.0.5, every 15s", "Cannot read the BMC: 10.0.0.5 ...", raw answers
+        forms = sorted({srv.host, bare_host(srv.host), srv.cfg.get("username") or srv.host}, key=len, reverse=True)
+
+        def hide(value):
+            text = json.dumps(value)
+            for f in forms:
+                text = text.replace(json.dumps(f)[1:-1], "<bmc>")
+            return json.loads(text)
+        events, state, raw = hide(events), hide(state), hide(raw)
     return {"format": "fan-control-diagnostics", "app": VERSION, "created": int(time.time()),
             "driver": srv.driver.kind, "driver_label": srv.driver.label, "model": srv.driver.model,
             "interval": INTERVAL, "settings": srv.settings(), "state": state, "events": events, "raw": raw}
@@ -83,7 +95,8 @@ def diagnostics(srv):
 # route is ever open because of where it sits in a chain of ifs:
 #   public  anyone (sign-in page, health checks, static files)
 #   widget  a session, or a widget token as ?token= or a Bearer header
-#   viewer  any session, admin or read-only
+#   viewer  any session, admin or read-only, or a control token as a Bearer header
+#   control an admin session, or a control token: the changes automations may make
 #   admin   an admin session
 # /metrics checks its own token, since it has a rule of its own (open when nothing is protected).
 
@@ -217,7 +230,10 @@ def get_state(h):
     settings = srv.settings()
     with srv.lock:  # copy under the lock, send after: a slow client must never hold up the fans
         body = {**srv.state, **srv.info(), "interval": INTERVAL, "auth": bool(config.WEB_PASSWORD),
-                "version": VERSION, "settings": settings, "history": list(srv.history), "events": list(srv.events)}
+                "version": VERSION, "settings": settings, "history": list(srv.history), "events": list(srv.events),
+                "calibration": json.loads(json.dumps(srv.calib)),  # a copy: the loop changes it in place
+                "handed_until": srv.handed_until,
+                "clock": {"time": time.strftime("%H:%M"), "offset": time.strftime("%z")}}
     return h.send(200, body)
 
 
@@ -236,6 +252,29 @@ def get_history(h):
     return h.send(200, {"points": points, "bucket": 300})
 
 
+@route("GET", r"/api/history\.csv", "viewer")
+def get_history_csv(h):
+    """The history as a spreadsheet: every reading for the last 3 hours, 5-minute averages beyond."""
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    try:
+        seconds = min(7 * 86400, max(600, int(h.query.get("seconds", ["86400"])[0])))
+    except ValueError:
+        return h.send(400, {"error": "seconds must be a number"})
+    since = time.time() - seconds
+    with srv.lock:
+        points = [p for p in (srv.history if seconds <= HISTORY_SECONDS else srv.long) if p["t"] >= since]
+    cols = ("cpu", "cpu_max", "speed", "inlet", "exhaust", "rpm", "fanpct", "watts")
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
+    w.writerow(["time", "cpu_c", "cpu_max_c", "fan_speed_pct", "inlet_c", "exhaust_c", "fan_rpm", "fan_pct", "watts"])
+    for p in points:
+        w.writerow([time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(p["t"]))] + ["" if p.get(c) is None else p[c] for c in cols])
+    return h.send(200, out.getvalue().encode(), "text/csv; charset=utf-8",
+                  headers=[("Content-Disposition", f'attachment; filename="{srv.id}-history.csv"')])
+
+
 @route("GET", r"/api/alerts", "viewer")
 def get_alerts(h):
     return h.send(200, public_alert_config(alert_config()))
@@ -248,7 +287,8 @@ def get_integrations(h):
                         "metrics_open": not config.WEB_PASSWORD and not tokens.any_token("metrics"),
                         "embed_token": tokens.any_token("widget"), "interval": INTERVAL,
                         "tokens": tokens.public(), "role": h.role(),
-                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN)},
+                        "env_tokens": {"widget": bool(config.EMBED_TOKEN), "metrics": bool(config.METRICS_TOKEN), "control": False,
+                                       "sensor": False},
                         "widget_fields": widget_fields(), "widget_all": WIDGET_FIELDS,
                         "servers": [{"id": s.id, "name": s.name} for s in list(SERVERS.values())]})
 
@@ -277,7 +317,8 @@ def get_server(h, sid):
         return None
     # the BMC account name is half a credential
     return h.send(200, {**srv.info(), "username": srv.cfg.get("username", ""),
-                        "verify_tls": srv.cfg.get("verify_tls", False), "has_password": bool(srv.cfg.get("password"))})
+                        "verify_tls": srv.cfg.get("verify_tls", False), "ipmi_cipher": srv.cfg.get("ipmi_cipher"),
+                        "has_password": bool(srv.cfg.get("password"))})
 
 
 @route("GET", r"/api/servers/([a-z0-9-]+)/diagnostics", "admin")
@@ -296,15 +337,20 @@ def get_export(h):
 
 # ---- admin: changes
 
-@route("POST", r"/api/settings", "admin")
+@route("POST", r"/api/settings", "control")
 def post_settings(h):
     srv = server_or_404(h)
     if srv is None:
         return None
+    current = srv.settings()
     try:
-        s = validate_settings(h.body, srv.settings())
+        s = validate_settings(h.body, current)
     except (ValueError, TypeError) as e:
         return h.send(400, {"error": str(e)})
+    if h.role() != "admin":  # a control token: the protections stay as an admin set them
+        touched = [k for k in PROTECTIONS if s[k] != current[k]]
+        if touched:
+            return h.send(403, {"error": f"a control token cannot change {', '.join(touched)}; an admin can"})
     srv.save_settings(s, h.who())
     return h.send(200, s)
 
@@ -368,10 +414,11 @@ def post_server_test(h):
     """Read the BMC once with the details being entered, before they are saved."""
     stored = SERVERS.get(str(h.body.get("id", "")))
     try:
-        cfg = validate_server(h.body, stored.cfg if stored and stored.cfg.get("source") == "dashboard" else None)
+        cfg = validate_server(h.body, stored.cfg if stored else None)
     except (ValueError, TypeError) as e:
         return h.send(400, {"ok": False, "error": str(e)})
     drv = DRIVERS[cfg["driver"]](cfg["host"], cfg["username"], cfg.get("password", ""), cfg["verify_tls"], str(DATA_DIR))
+    drv.cipher = cfg.get("ipmi_cipher")
     try:
         data = drv.read()
     except DriverError as e:
@@ -441,8 +488,16 @@ def post_server_edit(h, sid, delete):
         srv = server_or_404(h, sid)
         if srv is None:
             return None
-        if srv.cfg.get("source") == "environment":
-            return h.send(409, {"error": "this server is defined in the environment; change it there"})
+        source = srv.cfg.get("source")
+        if delete and source == "environment":
+            return h.send(409, {"error": "this server is declared in the compose file; remove it there"})
+        if delete and source == "override":  # back to what the compose file says
+            env = next((c for c in env_servers() if c["id"] == srv.id), None)
+            stop(srv)
+            srv = start(env)
+            save_dashboard_servers()
+            srv.log(f"Connection settings reset to the compose file's by {h.who()}")
+            return h.send(200, srv.info())
         if delete:
             stop(srv, forget=True)
             forget_pin(str(DATA_DIR), srv.host)
@@ -453,6 +508,8 @@ def post_server_edit(h, sid, delete):
             cfg = validate_server(h.body, srv.cfg)
         except (ValueError, TypeError) as e:
             return h.send(400, {"error": str(e)})
+        if source in ("environment", "override"):  # kept here, over the compose file's values, until reset
+            cfg.update(source="override", overrides=True)
         stop(srv)  # restart with the new address, credentials or driver
         forget_pin(str(DATA_DIR), cfg["host"])  # saving accepts the certificate the BMC shows now
         srv = start(cfg)
@@ -499,6 +556,130 @@ def post_widget_config(h):
     return h.send(200, {"fields": widget_fields()})
 
 
+@route("GET", r"/api/settings/history", "viewer")
+def get_settings_history(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    return h.send(200, {"changes": srv.changes()[::-1]})
+
+
+SEL_LOCKS, SEL_CACHE = {}, {}  # server id -> lock; -> (when, result)
+
+
+@route("GET", r"/api/sel", "viewer")
+def get_sel(h):
+    """The BMC's event log, read when asked: it takes the BMC a few seconds."""
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    cached = SEL_CACHE.get(srv.id)
+    if cached and time.monotonic() - cached[0] < 60 and "fresh" not in h.query:
+        return h.send(200, cached[1])
+    lock = SEL_LOCKS.setdefault(srv.id, threading.Lock())
+    if not lock.acquire(blocking=False):  # each read opens BMC sessions the control loop needs
+        return h.send(429, {"error": "the event log is being read already; try again in a moment"})
+    try:
+        sel = srv.driver.sel()
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+    finally:
+        lock.release()
+    SEL_CACHE[srv.id] = (time.monotonic(), sel)
+    return h.send(200, sel)
+
+
+@route("POST", r"/api/sel/clear", "admin")
+def post_sel_clear(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    try:
+        srv.driver.clear_sel()
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+    SEL_CACHE.pop(srv.id, None)
+    srv.log(f"BMC event log cleared by {h.who()}")
+    return h.send(200, {"ok": True})
+
+
+@route("POST", r"/api/calibrate", "admin")
+def post_calibrate(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if h.body.get("action") == "stop":
+        with srv.lock:
+            if srv.calibrating():
+                srv.finish_calibration("stopped", f"stopped by {h.who()}")
+        return h.send(200, {"ok": True})
+    why = srv.start_calibration(h.who())
+    return h.send(409, {"error": why}) if why else h.send(200, {"ok": True})
+
+
+@route("POST", r"/api/handover", "control")
+def post_handover(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    minutes = h.body.get("minutes")
+    if not (type(minutes) is int and 0 <= minutes <= 7 * 24 * 60):
+        return h.send(400, {"error": "minutes must be a whole number from 0 to 10080 (7 days)"})
+    if not srv.control:
+        return h.send(409, {"error": "this server is monitored only"})
+    srv.hand_over(minutes, h.who())
+    return h.send(200, {"handed_until": srv.handed_until})
+
+
+@route("POST", r"/api/sensors", "public")
+def post_sensors(h):
+    """Host sensors pushed by a script: an admin session, a control token or a sensor token."""
+    if not (h.role() == "admin" or h.control_token() or h.control_token("sensor")):
+        return h.send(401, {"error": "send a sensor or control token as a Bearer token"})
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if h.body.get("forget"):
+        srv.forget_pushed(h.who())
+        return h.send(200, {"ok": True})
+    try:
+        srv.push_sensors(h.body.get("temps"), time.time())
+    except ValueError as e:
+        return h.send(400, {"error": str(e)})
+    return h.send(200, {"ok": True, "stale_after": srv.PUSH_STALE})
+
+
+@route("GET", r"/api/bmc-profile", "viewer")
+def get_bmc_profile(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if not hasattr(srv.driver, "bmc_profile"):
+        return h.send(404, {"error": "only Dell iDRACs read over Redfish have thermal settings here"})
+    try:
+        return h.send(200, srv.driver.bmc_profile())
+    except DriverError as e:
+        return h.send(404, {"error": str(e)})
+
+
+@route("POST", r"/api/bmc-profile", "admin")
+def post_bmc_profile(h):
+    srv = server_or_404(h)
+    if srv is None:
+        return None
+    if not hasattr(srv.driver, "set_bmc_profile"):
+        return h.send(404, {"error": "only Dell iDRACs read over Redfish have thermal settings here"})
+    try:
+        changes = srv.driver.set_bmc_profile(h.body.get("settings"))
+    except ValueError as e:
+        return h.send(400, {"error": str(e)})
+    except DriverError as e:
+        return h.send(503, {"error": str(e)})
+    if changes:
+        srv.log(f"iDRAC thermal settings changed by {h.who()}: " + ", ".join(f"{k.split('.')[-1]} {v}" for k, v in changes.items()))
+    return h.send(200, srv.driver.bmc_profile())
+
+
 @route("POST", r"/api/smart/forget", "admin")
 def post_smart_forget(h):
     srv = server_or_404(h)
@@ -514,6 +695,23 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "fan-control"
     sys_version = ""
     timeout = 30  # drop clients that open a connection and never finish the request
+    DEADLINE = 120  # s a connection may live at all: a client dripping a byte now and then keeps no slot
+
+    def setup(self):
+        super().setup()
+        self.deadline = threading.Timer(self.DEADLINE, self.cut)
+        self.deadline.daemon = True
+        self.deadline.start()
+
+    def cut(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def finish(self):
+        self.deadline.cancel()
+        super().finish()
 
     def log_message(self, *_):
         pass
@@ -543,12 +741,21 @@ class Handler(BaseHTTPRequestHandler):
         """The address to account sign-ins and changes to (see sessions.client_address)."""
         return client_address(self.client_address[0], self.headers.get("X-Forwarded-For", ""))
 
+    def control_token(self, kind="control"):
+        """The name of the token of this kind sent as a Bearer header, or None."""
+        bearer = self.headers.get("Authorization", "")
+        return tokens.name_of(bearer.removeprefix("Bearer "), kind) if bearer.startswith("Bearer ") else None
+
     def who(self):
-        return f"{self.role()} at {self.client()}"
+        token = None if self.role() else self.control_token() or self.control_token("sensor")
+        return f'token "{token}" at {self.client()}' if token else f"{self.role()} at {self.client()}"
+
+    answered = False  # the status line went out: past it, an error can only close the connection
 
     def send(self, code, body=b"", ctype="application/json", headers=(), frame=False):
         if not isinstance(body, bytes):
             body = json.dumps(body).encode()
+        self.answered = True
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -591,7 +798,28 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         self.route, self.query = url.path, parse_qs(url.query)
 
+    def host_allowed(self):
+        """Without a password, a page on any site could rebind its own name to this address and act as
+        admin (DNS rebinding). So the Host must be an address, localhost, a name without dots or under
+        .local/.lan/.home/.internal/.home.arpa, or one listed in ALLOWED_HOSTS. With a password the
+        session cookie, which such a page never has, does the job."""
+        if config.WEB_PASSWORD:
+            return True
+        import ipaddress
+        host = (self.headers.get("Host") or "").lower()
+        name = host[1:].split("]")[0] if host.startswith("[") else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        if host in config.ALLOWED_HOSTS or name in config.ALLOWED_HOSTS or name in ("", "localhost") or "." not in name:
+            return True
+        try:
+            ipaddress.ip_address(name)
+            return True
+        except ValueError:
+            return name.endswith((".local", ".lan", ".home", ".internal", ".home.arpa", ".localhost"))
+
     def dispatch(self, method):
+        if not self.host_allowed():
+            return self.send(403, {"error": "this host name is not allowed without a password: set WEB_PASSWORD, "
+                                            "or add it to ALLOWED_HOSTS"})
         for m, pattern, access, fn in ROUTES:
             match = pattern.match(self.route) if m == method else None
             if not match:
@@ -600,12 +828,21 @@ class Handler(BaseHTTPRequestHandler):
                 if self.route == "/embed":
                     return self.send(401, b"Sign in, or add ?token= with a widget token", "text/plain; charset=utf-8", frame=True)
                 return self.send(401, {"error": "sign in, or send a widget token as a Bearer token or ?token="})
-            if access in ("viewer", "admin") and not self.authed():
+            by_token = access in ("viewer", "control") and not self.role() and self.control_token()
+            if access in ("viewer", "control", "admin") and not self.authed() and not by_token:
                 return self.redirect("/login") if (method, self.route) == ("GET", "/") else \
                     self.send(401, {"error": "sign in required"})
-            if access == "admin" and self.role() != "admin":
+            if access in ("control", "admin") and self.role() != "admin" and not by_token:
                 return self.send(403, {"error": "this account can only look"})
-            return fn(self, *match.groups())
+            try:
+                return fn(self, *match.groups())
+            except Exception as e:
+                # an answer, never a dropped connection: behind a reverse proxy that shows up as an
+                # opaque 502, with the cause nowhere. The traceback goes to the log.
+                log.exception("%s %s failed", method, self.route)
+                if self.answered:  # too late for a status; the connection just closes
+                    return None
+                return self.send(500, {"error": f"internal error: {e!r}; the log has the details"})
         return self.send(404, {"error": "not found"})
 
     def do_HEAD(self):
@@ -617,23 +854,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.parse()
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.send(400, {"error": "bad Content-Length"})
+        big = self.route == "/api/import" and self.role() == "admin"  # backups can be large; only an admin sends one
+        if not 0 <= length <= (1_000_000 if big else 10000):
+            return self.send(413, {"error": "request too large"})
+        # read before any refusal: closing a socket with unread data resets the connection, which a
+        # reverse proxy reports as 502 instead of passing the refusal on
+        raw = self.rfile.read(length)
         # JSON only: a cross-site form cannot send this content type without a CORS preflight
-        if self.headers.get("Content-Type") != "application/json":
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             return self.send(415, {"error": "expected application/json"})
         origin = self.headers.get("Origin")
         hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
         if origin and urlsplit(origin).netloc not in hosts:
             return self.send(403, {"error": "cross-origin request refused"})
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            return self.send(400, {"error": "bad Content-Length"})
-        if not 0 <= length <= (1_000_000 if self.route == "/api/import" else 10000):  # backups can be large
-            return self.send(413, {"error": "request too large"})
-        try:
-            self.body = json.loads(self.rfile.read(length) or b"{}")
+            self.body = json.loads(raw or b"{}")
             if not isinstance(self.body, dict):
                 raise ValueError("expected a JSON object")
-        except ValueError as e:
-            return self.send(400, {"error": str(e)})
+        except (ValueError, RecursionError) as e:
+            return self.send(400, {"error": str(e)[:200] or "nested too deep"})
         self.dispatch("POST")

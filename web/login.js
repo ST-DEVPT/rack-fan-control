@@ -5,7 +5,7 @@ form.onsubmit = async e => {
   try {
     const r = await api("/api/login", { password: form.password.value, remember: form.remember.checked });
     if (r.ok) return location.replace("/");
-    err.textContent = (await r.json()).error || "Sign-in failed";
+    err.textContent = await failure(r);
     form.password.select();
   } catch {
     err.textContent = "Cannot reach the dashboard";

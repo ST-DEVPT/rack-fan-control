@@ -28,6 +28,14 @@ groups:
           summary: "{{ $labels.name }}: BMC unreachable"
           description: The BMC has not answered for 5 minutes; it controls its fans on its own meanwhile.
 
+      - alert: FansNotFollowing
+        expr: fanctl_fans_following == 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.name }}: the fans do not follow Fan Control"
+          description: Their RPM does not match the speed set, so the BMC seems to have taken them back. Fan Control keeps taking them again; if this lasts, check the BMC.
+
       - alert: FailsafeLasting
         expr: fanctl_failsafe_active == 1
         for: 10m

@@ -9,6 +9,10 @@ DEFAULT_SETTINGS = {
     "mode": "curve",  # auto | fixed | curve | smart
     "fixed_speed": 20,
     "curve": [[30, 10], [45, 15], [55, 25], [65, 45], [72, 70]],
+    "curve_source": None,      # what the curve follows: None = the hottest CPU, "exhaust", or a temperature
+                               # sensor's name (a GPU, a disk bay); the CPU failsafe applies whichever
+    "extra_curves": [],        # more curves, each on its own sensor ({"source", "curve"}): the fans run at the
+                               # highest speed any curve asks for (a GPU or a disk shelf next to the CPU)
     "failsafe_temp": 75,       # at or above this CPU temp, hand control back to the BMC
     "ramp_down_seconds": 60,   # fans speed up at once, slow down only after this long
     "pcie_cooling": None,      # None = leave untouched, True/False = enforce
@@ -38,6 +42,18 @@ def curve_speed(curve, temp):
         if temp <= t1:
             return round(s0 + (s1 - s0) * (temp - t0) / (t1 - t0)) if t1 > t0 else s1
     return pts[-1][1]
+
+
+def curve_input(source, cpu_temp, sensors=None):
+    """The temperature the curve follows (see DEFAULT_SETTINGS["curve_source"]), or None when that
+    sensor gives no reading. Several sensors with one name (Dell calls both CPUs "Temp"): the hottest."""
+    if source is None:
+        return cpu_temp
+    sensors = sensors or {}
+    if source == "exhaust":
+        return sensors.get("exhaust")
+    vals = [t["value"] for t in sensors.get("temps", []) if t["name"] == source]
+    return max(vals) if vals else None
 
 
 def hazard(settings, cpu_temp, sensors=None, tripped=False):
@@ -85,7 +101,18 @@ def decide(settings, cpu_temp, was_failsafe=False, sensors=None):
         return "manual", None, "smart", False  # the speed comes from smart_step(), which keeps state
     if settings["mode"] == "fixed":
         return "manual", max(settings["fixed_speed"], floor), "fixed speed", False
-    return "manual", max(curve_speed(settings["curve"], cpu_temp), floor), f"curve at {cpu_temp:.0f}°C", False
+    source = settings.get("curve_source")
+    temp = curve_input(source, cpu_temp, sensors)
+    if temp is None:  # a sensor that was never there; one that stops reporting trips the failsafe in faults()
+        return "auto", None, f"the curve's sensor {source} gives no reading", False
+    label = "" if source is None else "exhaust air " if source == "exhaust" else f"{source} "
+    speed, reason = curve_speed(settings["curve"], temp), f"curve at {label}{temp:.0f}°C"
+    for extra in settings.get("extra_curves", []):  # the highest wins: another curve can only add cooling
+        t = curve_input(extra["source"], cpu_temp, sensors)
+        if t is not None and curve_speed(extra["curve"], t) > speed:
+            speed = curve_speed(extra["curve"], t)
+            reason = f"curve at {'exhaust air' if extra['source'] == 'exhaust' else extra['source']} {t:.0f}°C"
+    return "manual", max(speed, floor), reason, False
 
 
 def failed_fans(fans):
@@ -155,7 +182,7 @@ def aggregate(points):
     return {"t": points[-1]["t"], "cpu": avg("cpu"), "cpu_max": max(cpus) if cpus else None,
             "speed": round(sum(manual) / len(manual)) if len(manual) * 2 > len(points) else None,
             "inlet": avg("inlet"), "exhaust": avg("exhaust"), "rpm": avg("rpm"), "fanpct": avg("fanpct"),
-            "watts": avg("watts")}
+            "watts": avg("watts"), "target": avg("target")}
 
 
 def ramped(window, now, target, hold):
@@ -185,10 +212,25 @@ def validate_settings(new, current):
             and 0 <= p[0] <= 110 and 0 <= p[1] <= 100 for p in c)):
         raise ValueError("the curve needs 2 to 10 [temperature, speed] points, speed 0-100")
     s["curve"] = sorted([round(p[0]), round(p[1])] for p in c)
+    extras = s["extra_curves"]
+    if not (isinstance(extras, list) and len(extras) <= 3):
+        raise ValueError("up to 3 extra curves")
+    for e in extras:
+        if not (isinstance(e, dict) and set(e) == {"source", "curve"} and isinstance(e["source"], str)
+                and 1 <= len(e["source"]) <= 60):
+            raise ValueError("each extra curve needs a source sensor and a curve")
+        pts = e["curve"]
+        if not (isinstance(pts, list) and 2 <= len(pts) <= 10 and all(
+                isinstance(p, list) and len(p) == 2 and all(type(x) in (int, float) for x in p)
+                and 0 <= p[0] <= 110 and 0 <= p[1] <= 100 for p in pts)):
+            raise ValueError(f"{e['source']}: the curve needs 2 to 10 [temperature, speed] points, speed 0-100")
+        e["curve"] = sorted([round(p[0]), round(p[1])] for p in pts)
+    if s["curve_source"] is not None and not (isinstance(s["curve_source"], str) and 1 <= len(s["curve_source"]) <= 60):
+        raise ValueError("curve_source must be empty (the hottest CPU), \"exhaust\" or a sensor name")
     if s["pcie_cooling"] not in (None, True, False):
         raise ValueError("pcie_cooling must be null, true or false")
-    if not (type(s["min_speed"]) is int and 10 <= s["min_speed"] <= 60):
-        raise ValueError("minimum speed must be a whole number from 10 to 60")
+    if not (type(s["min_speed"]) is int and 0 <= s["min_speed"] <= 60):
+        raise ValueError("minimum speed must be a whole number from 0 to 60")
     if s["exhaust_limit"] is not None and not (type(s["exhaust_limit"]) in (int, float) and 30 <= s["exhaust_limit"] <= 90):
         raise ValueError("exhaust limit must be between 30 and 90 °C, or empty to turn it off")
     if not (type(s["threshold_margin"]) in (int, float) and 0 <= s["threshold_margin"] <= 20):
@@ -272,7 +314,9 @@ def smart_watch(settings, cpu, sensors):
     8 °C below the point where they would trip. Inlet air is left out: no fan speed cools the room."""
     out = []
     if cpu is not None:
-        out.append(("CPU", cpu, settings["smart_target"], settings["failsafe_temp"]))
+        # 8 C clear of the failsafe, like every other sensor: closer, every bump boosts (a profile or an old
+        # file may hold a target up to 3 C under it, which validation still allows)
+        out.append(("CPU", cpu, min(settings["smart_target"], settings["failsafe_temp"] - 8), settings["failsafe_temp"]))
     sensors = sensors or {}
     limit = settings.get("exhaust_limit")
     if limit is not None and sensors.get("exhaust") is not None:
@@ -419,7 +463,7 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
     # learn from the last minute if it was steady; the map takes over from the trim without a jump
     learning = False
     if load is not None and last is not None and not settings.get("dry_run"):
-        seen = steady_speed(memory.get("trail", []), worst, floor, now)
+        seen = steady_speed(memory.get("trail", []) + [(now, last, load, False)], worst, floor, now)
         if seen is not None:
             k = str(round(math.log(load) / math.log(SMART_BIN)))
             old = learned.get(k)
@@ -430,7 +474,10 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
 
     # quiet hours give way gradually as anything nears its trip point: louder fans beat a failsafe
     closest = max(x["fit"] - (x["trip"] - SMART_YIELD) for x in items)
-    ceiling = min(100, ceiling + SMART_YIELD_RATE * max(0, closest)) if ceiling < 100 else 100
+    capped = ceiling = min(100, ceiling + SMART_YIELD_RATE * max(0, closest)) if ceiling < 100 else 100
+    # what a boost lifted the cap by fades at the slow descent's pace, so the speed comes down gently
+    lift = memory["lift"] = max(0.0, memory.get("lift", 0.0) - SMART_DOWN * dt)
+    ceiling = min(100, ceiling + lift)
 
     b, p = base or 0, SMART_KP * e_pred
     raw = b + p + memory["i"]
@@ -445,17 +492,18 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
     if last is None:
         speed = raw
     elif near:
-        speed = max(raw, last + SMART_BOOST)
-        memory["i"] = speed - b - p  # stay up there until the temperature turns
+        speed = min(100, max(min(raw, ceiling), last + SMART_BOOST))  # a step, not a jump to whatever raw says
+        memory["i"] = max(-100, min(100, speed - b - p))  # stay up there until the temperature turns
+        memory["lift"] = max(lift, speed - capped)
     elif abs(raw - last) < SMART_MIN_CHANGE and floor < raw < ceiling:
         speed = last  # don't chase sensor noise one percent at a time
     elif raw > last:
         speed = min(raw, last + SMART_UP)
-    elif now - memory.get("wanted", now) < settings.get("ramp_down_seconds", 60):
-        speed = last  # lower demand must last the ramp-down delay: a burst every minute holds the fans steady
+    elif e_now > SMART_DEADBAND or now - memory.get("wanted", now) < settings.get("ramp_down_seconds", 60):
+        speed = last  # above target, or lower demand not lasted the ramp-down delay yet: hold
     else:
         speed = max(raw, last - (SMART_DOWN_FAR if e_now < -4 else SMART_DOWN) * dt)
-    speed = min(100 if near else ceiling, max(floor, speed))
+    speed = min(ceiling, max(floor, speed))
     if last is None or raw >= speed - SMART_MIN_CHANGE:
         memory["wanted"] = now  # last time the demand reached the speed
     memory.update(last=speed, base=base)
@@ -469,8 +517,8 @@ def smart_step(memory, learned, settings, cpu, sensors, now, ceiling=None):
         reason = f"smart: {gov['name']} {gov['value']:.0f}°C, target {gov['target']:.0f}°C"
         if gov["pred"] >= gov["value"] + 1:
             reason += f", rising to {gov['pred']:.0f}°C"
-        if raw > ceiling and speed >= ceiling:
-            reason += f", quiet hours cap {ceiling}%"
+        if ceiling < 100 and raw > ceiling and speed >= ceiling:
+            reason += f", quiet hours cap {ceiling:.0f}%"
     return round(speed), {
         "reason": reason, "sensor": gov["name"], "value": gov["value"], "target": gov["target"],
         "predicted": round(gov["pred"], 1), "trend": round(gov["slope"] * 60, 2),  # °C per minute

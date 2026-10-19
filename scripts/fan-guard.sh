@@ -24,28 +24,45 @@ ENV_FILE=${ENV_FILE:-$(dirname "$0")/.env}
 if [ -w /run ]; then STATE=${STATE:-/run/fan-guard.failures}; else STATE=${STATE:-/tmp/fan-guard.failures.$(id -u)}; fi
 
 case $ENV_FILE in */*) ;; *) ENV_FILE=./$ENV_FILE ;; esac  # `.` searches PATH for a bare name
+log() { echo "$(date '+%F %T') fan-guard: $*"; }
+
+# one run at a time: a docker that hangs must not stack a stuck guard every minute
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$STATE.lock"
+  flock -n 9 || { log "the previous run is still going" >&2; exit 1; }
+fi
+
 if [ -f "$ENV_FILE" ]; then
-  # the file is run as shell code by root: refuse one that anyone else can change
-  if [ -n "$(find "$ENV_FILE" -perm -0022 2>/dev/null)" ]; then
+  # root reads it: refuse a file anyone else can change (group or others writable)
+  if [ -n "$(find "$ENV_FILE" \( -perm -0020 -o -perm -0002 \) 2>/dev/null)" ]; then
     echo "$(date '+%F %T') fan-guard: $ENV_FILE is writable by others; fix with chmod 600 $ENV_FILE" >&2
     exit 1
   fi
-  set -a
-  # shellcheck source=/dev/null
-  . "$ENV_FILE"
-  set +a
+  # Read as KEY=value lines, never run as shell code: a Compose .env is not shell, and a password with a
+  # space or a ; must stay a password. Quotes around a value are taken off.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in ''|*[!A-Za-z0-9_]*|[0-9]*) continue ;; esac
+    case $value in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
+    eval "$key=\$value"
+  done < "$ENV_FILE"
 fi
 
-log() { echo "$(date '+%F %T') fan-guard: $*"; }
+limited() {  # a hung dockerd must not hang the guard: no answer in 15 s counts as no Docker
+  if command -v timeout >/dev/null 2>&1; then timeout 15 "$@"; else "$@"; fi
+}
 
-if ! docker info >/dev/null 2>&1; then
+if ! limited docker info >/dev/null 2>&1; then
   status="docker-down"  # no Docker, no Fan Control: the fans are on their own
 else
   if [ -z "$CONTAINER" ]; then
-    CONTAINER=$(docker ps -a --format '{{.Names}} {{.Image}}' | awk '$2 ~ /rack-fan-control|idrac-fan/ {print $1; exit}')
+    CONTAINER=$(limited docker ps -a --format '{{.Names}} {{.Image}}' |
+      awk '$1 == "fan-control" || $2 ~ /rack-fan-control|idrac-fan/ {print $1; exit}')
     [ -n "$CONTAINER" ] || { rm -f "$STATE"; exit 0; }  # nothing deployed: nothing to guard
   fi
-  status=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null)
+  status=$(limited docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CONTAINER" 2>/dev/null)
   [ -n "$status" ] || { rm -f "$STATE"; exit 0; }       # removed on purpose
 fi
 
@@ -55,10 +72,13 @@ case "$status" in
     exit 0 ;;
 esac
 
-# one bad minute can be a restart in progress; act from the second one, and keep acting while it lasts
+# one bad minute can be a restart in progress; act from the second one, and keep acting while it lasts.
+# "unhealthy" while running is only a slow health check (a busy dashboard) for the first 5 minutes: the
+# app's own watchdog restarts a stalled control loop, which shows as "restarting"
 failures=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
 echo "$failures" > "$STATE"
-[ "$failures" -lt 2 ] && exit 0
+case "$status" in "running unhealthy") need=5 ;; *) need=2 ;; esac
+[ "$failures" -lt "$need" ] && exit 0
 
 send_auto() {  # host user password driver: the BMC's own fan control back, by the way each vendor takes it
   case "${4:-dell}" in
@@ -83,11 +103,20 @@ hand_back() {  # host user password driver
   fi
 }
 
-if [ -n "$GUARD_SERVERS" ]; then
-  for name in $GUARD_SERVERS; do
-    case $name in ''|*[!A-Za-z0-9_]*) log "skipping invalid server name '$name'"; continue ;; esac
-    eval "hand_back \"\${${name}_HOST}\" \"\${${name}_USERNAME:-root}\" \"\${${name}_PASSWORD}\" \"\${${name}_DRIVER:-dell}\""
+# the servers: GUARD_SERVERS names them; else the compose file's SERVER_1_... and IDRAC_... ones
+if [ -z "$GUARD_SERVERS" ]; then
+  n=1
+  while eval "[ -n \"\${SERVER_${n}_HOST}\" ]"; do
+    eval "[ \"\${SERVER_${n}_DRIVER:-dell}\" = demo ]" || GUARD_SERVERS="$GUARD_SERVERS SERVER_$n"
+    n=$((n + 1))
   done
-else
-  hand_back "$IDRAC_HOST" "${IDRAC_USERNAME:-root}" "$IDRAC_PASSWORD" dell
+  [ -n "$IDRAC_HOST" ] && GUARD_SERVERS="$GUARD_SERVERS IDRAC"
 fi
+if [ -z "$GUARD_SERVERS" ]; then
+  log "no servers to hand back: set GUARD_SERVERS (or SERVER_1_HOST, IDRAC_HOST) in $ENV_FILE" >&2
+  exit 1
+fi
+for name in $GUARD_SERVERS; do
+  case $name in ''|*[!A-Za-z0-9_]*) log "skipping invalid server name '$name'"; continue ;; esac
+  eval "hand_back \"\${${name}_HOST}\" \"\${${name}_USERNAME:-root}\" \"\${${name}_PASSWORD}\" \"\${${name}_DRIVER:-dell}\""
+done
