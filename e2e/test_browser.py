@@ -73,7 +73,7 @@ class Browser(unittest.TestCase):
 
     def test_every_page_loads_cleanly(self):
         page = self.page()
-        for view in ("alerts", "prometheus", "grafana", "homarr", "backup", "add"):
+        for view in ("alerts", "prometheus", "grafana", "homarr", "automation", "backup", "add"):
             with self.subTest(view=view):
                 page.goto(f"{URL}/#/{view}")
                 page.wait_for_selector(f"#v-{'edit' if view == 'add' else view}:not([hidden])")

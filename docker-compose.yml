@@ -4,6 +4,9 @@ services:
     container_name: fan-control
     restart: unless-stopped
     stop_grace_period: 60s        # time to hand every fan back to its BMC on `docker stop`
+    init: true                    # reaps ssh children a timed-out iLO 4 command leaves behind
+    logging:
+      options: {max-size: 10m, max-file: "3"}
     ports:
       - "8080:8080"
     volumes:

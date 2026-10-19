@@ -33,6 +33,9 @@ def metrics(servers):
             None if st["effective"] is None else int(st["effective"] != "manual"))
         add("fanctl_failsafe_active", "1 while the failsafe temperature has handed control to the BMC.",
             lbl, int(st["failsafe"]))
+        add("fanctl_fans_following", "1 while the fans turn as fast as the speed set made them before, 0 when they "
+            "do not (the BMC took them back); absent until known.", lbl,
+            None if st.get("following") is None else int(st["following"]))
         add("fanctl_fan_speed_percent", "Fan speed set by the controller (absent in automatic mode).", lbl, st["applied_speed"])
         add("fanctl_cpu_temperature_celsius", "Hottest CPU temperature.", lbl, st["cpu_temp"])
         add("fanctl_inlet_temperature_celsius", "Inlet air temperature.", lbl, sens.get("inlet"))

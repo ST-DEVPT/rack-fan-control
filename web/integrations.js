@@ -1,4 +1,4 @@
-// Prometheus, Grafana, Homarr and Backup pages: generated snippets, live checks and previews.
+// Prometheus, Grafana, Homarr, Automation and Backup pages: generated snippets, live checks and previews.
 // Tokens are never sent to the browser, so snippets carry placeholders for them.
 let integ = null, grafanaPanels = null;
 
@@ -15,6 +15,7 @@ const METRICS = [
   ["fanctl_power_on", "1 if the server is on"],
   ["fanctl_bmc_control", "1 while the BMC's own fan control is active"],
   ["fanctl_failsafe_active", "1 while the failsafe holds"],
+  ["fanctl_fans_following", "0 when the fans do not turn as the speed set should make them"],
   ["fanctl_last_update_timestamp_seconds", "Time of the last reading"],
   ["fanctl_loop_last_tick_timestamp_seconds", "Time the control loop last turned"],
   ["fanctl_bmc_errors_total", "Failed BMC readings (counter)"],
@@ -47,6 +48,71 @@ async function renderIntegration(view) {
   if (view === "prometheus") renderPrometheus();
   if (view === "grafana") renderGrafana();
   if (view === "homarr") renderHomarr();
+  if (view === "automation") renderAutomation();
+}
+
+// ---------------------------------------------------------------- Automation
+function renderAutomation() {
+  const rows = integ.tokens.filter(t => t.kind === "control").length;
+  setStatus("#au-status", rows > 0, rows ? `${rows} control token${rows > 1 ? "s" : ""}` : "Off");
+  renderTokens("control");
+  const s = integ.servers[0] || { id: "<server>", name: "Server" }, base = location.origin;
+  const post = (path, body) => `curl -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \\\n` +
+    `  -d '${body}' "${base}${path}?server=${s.id}"`;
+  $("#au-curl").textContent = [
+    `# what the server is doing\ncurl -H "Authorization: Bearer <token>" "${base}/api/state?server=${s.id}"`,
+    `# every fan at 30 %\n${post("/api/settings", '{"mode": "fixed", "fixed_speed": 30}')}`,
+    `# smart mode, CPU held at 65 °C\n${post("/api/settings", '{"mode": "smart", "smart_target": 65}')}`,
+    `# the fans to the BMC for 2 hours ({"minutes": 0} takes them back)\n${post("/api/handover", '{"minutes": 120}')}`,
+  ].join("\n\n");
+  const cmd = (path, payload) => [`    url: "${base}${path}?server=${s.id}"`, "    method: post", "    headers:",
+    "      Authorization: !secret fan_control_bearer", '    content_type: "application/json"', `    payload: '${payload}'`];
+  $("#au-ha").textContent = [
+    "rest_command:", "  fans_quiet:", ...cmd("/api/settings", '{"mode": "smart", "smart_target": 68}'),
+    "  fans_to_bmc:", ...cmd("/api/handover", '{"minutes": 120}'), "",
+    "sensor:", "  - platform: rest", `    name: ${JSON.stringify(s.name + " CPU")}`, `    resource: "${base}/api/overview"`,
+    "    headers:", "      Authorization: !secret fan_control_bearer",
+    `    value_template: "{{ (value_json.servers | selectattr('id', 'eq', '${s.id}') | first).cpu_temp }}"`,
+    '    unit_of_measurement: "°C"', "    scan_interval: 30", "",
+    "# secrets.yaml", 'fan_control_bearer: "Bearer <token>"',
+  ].join("\n");
+  renderTokens("sensor");
+  $("#au-host").textContent = [
+    "#!/bin/sh",
+    "# Host temperatures for Fan Control. From root's cron, every minute:",
+    "#   * * * * * /usr/local/bin/fan-control-sensors",
+    `URL="${base}/api/sensors?server=${s.id}"`,
+    'TOKEN="<sensor token>"',
+    'temps=""',
+    "# NVIDIA GPUs: their own warning is near 85 °C",
+    "if command -v nvidia-smi > /dev/null; then",
+    "  for row in $(nvidia-smi --query-gpu=index,temperature.gpu --format=csv,noheader,nounits | tr -d ' '); do",
+    '    temps="$temps{\\"name\\": \\"GPU ${row%%,*}\\", \\"value\\": ${row#*,}, \\"warn\\": 85},"',
+    "  done",
+    "fi",
+    "# disks, through the drivetemp kernel module (modprobe drivetemp): most want to stay under 50 °C",
+    "for f in /sys/class/hwmon/hwmon*/temp1_input; do",
+    '  [ "$(cat "${f%/*}/name" 2> /dev/null)" = drivetemp ] || continue',
+    '  disk=$(basename "$(readlink -f "${f%/*}/device")")',
+    '  temps="$temps{\\"name\\": \\"disk $disk\\", \\"value\\": $(( $(cat "$f") / 1000 )), \\"warn\\": 50},"',
+    "done",
+    '[ -n "$temps" ] || exit 0',
+    'curl -fsS -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+    '  -d "{\\"temps\\": [${temps%,}]}" "$URL" > /dev/null',
+  ].join("\n");
+  $("#au-pve").textContent = [
+    "#!/bin/sh",
+    "# Proxmox vzdump hook: the BMC takes the fans while backups run",
+    `URL="${base}/api/handover?server=${s.id}"`,
+    'TOKEN="<control token>"',
+    'case "$1" in',
+    "  job-start) MINUTES=480 ;;          # taken back at the end; 8 h at most if the end never comes",
+    "  job-end|job-abort) MINUTES=0 ;;",
+    "  *) exit 0 ;;",
+    "esac",
+    'curl -fsS -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\',
+    '  -d "{\\"minutes\\": $MINUTES}" "$URL" > /dev/null || true',
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------- Prometheus
@@ -92,7 +158,7 @@ function renderTokens(kind) {
   const rows = integ.tokens.filter(t => t.kind === kind);
   const when = t => t ? new Date(t * 1000).toLocaleDateString() : translate("never");
   box.innerHTML = `
-    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate(kind === "widget" ? "Name, e.g. Homarr" : "Name, e.g. Prometheus")}"
+    ${admin ? `<form class="tok-new"><input name="name" maxlength="40" placeholder="${translate({ widget: "Name, e.g. Homarr", metrics: "Name, e.g. Prometheus", control: "Name, e.g. Home Assistant", sensor: "Name, e.g. GPU host" }[kind])}"
       aria-label="${translate("Token name")}" required><button class="btn">${translate("Create")}</button></form>` : ""}
     ${fresh[kind] ? `<div class="code"><pre id="tok-${kind}">${esc(fresh[kind])}</pre><button class="copy" data-copy="tok-${kind}">Copy</button></div>
       <p class="hint">${translate("Copy it now: only a hash of it is kept, so it is not shown again.")}</p>` : ""}
@@ -105,15 +171,15 @@ function renderTokens(kind) {
   if (form) form.onsubmit = async e => {
     e.preventDefault();
     const r = await api("/api/tokens", { name: form.name.value, kind });
+    if (!r.ok) return toast(await failure(r), true);
     const d = await r.json();
-    if (!r.ok) return toast(d.error, true);
     fresh[kind] = d.token;
     await renderIntegration(route.view);
   };
   box.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
     if (!confirm(translate(`Revoke ${b.dataset.name}? Whatever uses it stops working.`))) return;
     const r = await api("/api/tokens/revoke", { id: b.dataset.revoke });
-    if (!r.ok) return toast((await r.json()).error, true);
+    if (!r.ok) return toast(await failure(r), true);
     toast("Token revoked");
     await renderIntegration(route.view);
   });
@@ -178,7 +244,7 @@ $("#hm-download").addEventListener("click", async e => {
   // check the address first, so a typo shows here and not as an unreadable download
   e.preventDefault();
   const r = await api($("#hm-download").getAttribute("href"));
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not build the widget", true);
+  if (!r.ok) return toast(await failure(r), true);
   const url = URL.createObjectURL(await r.blob());
   const a = Object.assign(document.createElement("a"), { href: url, download: "fan-control-homarr-widget.json" });
   document.body.append(a); a.click(); a.remove();
@@ -187,7 +253,7 @@ $("#hm-download").addEventListener("click", async e => {
 $("#hm-fields").addEventListener("change", async () => {
   const fields = $$("#hm-fields input:checked").map(i => i.dataset.field);
   const r = await api("/api/widget-config", { fields });
-  if (!r.ok) return toast((await r.json().catch(() => ({}))).error || "Could not save", true);
+  if (!r.ok) return toast("Could not save: " + await failure(r), true);
   integ.widget_fields = (await r.json()).fields;
   toast("Widgets updated");
   renderHomarr();
@@ -235,10 +301,11 @@ $("#bk-file").onchange = async e => {
 };
 $("#bk-import").onclick = async () => {
   $("#bk-import").disabled = true;
-  const r = await api("/api/import", { data: backup });
-  const d = await r.json();
+  const r = await api("/api/import", { data: backup }).catch(() => null);
+  if (!r) { $("#bk-import").disabled = false; return toast("Fan Control did not answer", true); }
   const res = $("#bk-preview");
-  if (!r.ok) { res.className = "result bad"; res.textContent = d.error; return; }
+  if (!r.ok) { res.className = "result bad"; res.textContent = await failure(r); $("#bk-import").disabled = false; return; }
+  const d = await r.json();
   res.className = "result ok";
   res.innerHTML = [d.added.length && `Added: ${esc(d.added.join(", "))}.`, d.updated.length && `Updated: ${esc(d.updated.join(", "))}.`,
     d.skipped.length && `Skipped: ${esc(d.skipped.join("; "))}.`].filter(Boolean).join(" ") || "Nothing to change.";

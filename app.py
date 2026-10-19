@@ -61,6 +61,8 @@ class BoundedServer(ThreadingHTTPServer):
     """A thread per request, but never more than MAX_REQUESTS at once: a flood of slow or idle
     connections waits its turn instead of using up threads and memory."""
     MAX_REQUESTS = 64
+    WAIT = 10  # seconds a request waits for a free slot
+    request_queue_size = 64  # connections the kernel holds before accept(); a proxy opens many at once
     daemon_threads = True
 
     def __init__(self, *a, **kw):
@@ -68,8 +70,16 @@ class BoundedServer(ThreadingHTTPServer):
         self.slots = threading.BoundedSemaphore(self.MAX_REQUESTS)
 
     def process_request(self, request, client_address):
-        if not self.slots.acquire(timeout=10):
-            self.shutdown_request(request)  # busy for 10 s: drop this one rather than queue forever
+        if not self.slots.acquire(timeout=self.WAIT):  # busy: refuse this one rather than queue forever
+            try:  # with an answer: a silently closed connection reaches the browser as a proxy's 502
+                request.settimeout(1)
+                request.recv(65536)  # the request itself: closing with it unread would reset the connection
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                                b"Retry-After: 5\r\nConnection: close\r\n\r\n"
+                                b'{"error": "too many requests at once; try again in a moment"}')
+            except OSError:
+                pass
+            self.shutdown_request(request)
             return
         try:
             super().process_request(request, client_address)
@@ -95,6 +105,8 @@ def main():
         log.warning("DISCORD_WEBHOOK_URL is not a Discord webhook URL; it is ignored")
     if not config.WEB_PASSWORD:
         log.warning("WEB_PASSWORD is not set; the dashboard is open to anyone who can reach it")
+    elif config.WEB_PASSWORD == "change-me":  # noqa: S105 (the example file's placeholder, not a secret)
+        log.error("WEB_PASSWORD is still the example's change-me: anyone who read the README can sign in as admin")
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     for srv in list(SERVERS.values()):

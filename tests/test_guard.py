@@ -81,6 +81,28 @@ class FanGuard(unittest.TestCase):
         self.assertEqual(len(self.sent()), 2)
 
     def test_env_file_writable_by_others_is_refused(self):
-        (self.dir / ".env").chmod(0o666)
+        for mode in (0o666, 0o646, 0o620):
+            (self.dir / ".env").chmod(mode)
+            with self.subTest(mode=oct(mode)), self.assertRaises(subprocess.CalledProcessError):
+                self.run_guard("exited ")
+
+    def test_compose_servers_and_shell_characters_in_values(self):
+        (self.dir / ".env").write_text("SERVER_1_HOST=10.0.0.5\nSERVER_1_PASSWORD=pa ss;touch pwned\n"
+                                        "SERVER_2_HOST=demo\nSERVER_2_DRIVER=demo\n")
+        self.run_guard("exited ")
+        self.run_guard("exited ")
+        self.assertEqual(self.sent(), ["-I lanplus -H 10.0.0.5 -U root -E raw 0x30 0x30 0x01 0x01 password=pa ss;touch pwned"])
+        self.assertFalse((self.dir / "pwned").exists())
+
+    def test_no_servers_is_an_error(self):
+        (self.dir / ".env").write_text("WEB_PASSWORD=x\n")
+        self.run_guard("exited ")
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_guard("exited ")
+
+    def test_unhealthy_waits_five_minutes(self):
+        for _ in range(4):
+            self.run_guard("running unhealthy")
+        self.assertEqual(self.sent(), [])
+        self.run_guard("running unhealthy")
+        self.assertEqual(len(self.sent()), 2)

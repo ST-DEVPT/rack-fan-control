@@ -31,7 +31,8 @@ HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-F
 # ipmitool completion codes worth explaining instead of just echoing
 HINTS = {
     "rsp=0xc1": "the BMC does not have this command; iDRAC 9 firmware 3.34.34.34 and later removed manual fan control",
-    "rsp=0xd4": "insufficient privilege; the user must be an Administrator",
+    "rsp=0xd4": "insufficient privilege: the user must be an Administrator; on iDRAC 9 from firmware 3.34.34.34 "
+                "an Administrator gets this too, since manual fan control was removed: use the Redfish type",
     "rsp=0xcc": "the BMC rejected the fan selector",
 }
 
@@ -82,7 +83,40 @@ def parse_thresholds(text):
     return out
 
 
-def parse_sdr(text, thresholds=None):
+def parse_fan_floors(text):
+    """Each fan's lower threshold from `ipmitool sensor`, as {name: [rpm, ...]} in sensor order: below it
+    the BMC logs an event, lights the amber LED and often runs every fan at full speed. The lower
+    non-critical one when the BMC defines it, else the lower critical one."""
+    out = {}
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 10 or parts[2] != "RPM":
+            continue
+        floor = None
+        for col in (parts[6], parts[5]):
+            try:
+                floor = float(col)
+                break
+            except ValueError:
+                pass
+        out.setdefault(parts[0], []).append(floor if floor and floor > 0 else None)
+    return out
+
+
+SEL_RECENT = 25  # event log entries shown
+
+
+def parse_sel(info, elist):
+    """`ipmitool sel info` and `sel elist last N`. An entry: '  1f | 10/16/2026 | 01:23:45 | Fan #0x30 |
+    Lower Critical going low | Asserted'. A full log stops recording, so how full it is matters."""
+    def number(label):
+        m = re.search(label + r"\s*:\s*(\d+)", info)
+        return int(m.group(1)) if m else None
+    rows = [[p.strip() for p in line.split("|")] for line in elist.splitlines() if line.count("|") >= 4]
+    return {"used_pct": number("Percent Used"), "entries": number("Entries"), "recent": rows[::-1]}
+
+
+def parse_sdr(text, thresholds=None, fan_floors=None):
     """Parse `ipmitool sdr elist full`. Line shape: 'Inlet Temp | 04h | ok | 7.1 | 23 degrees C'.
     Entity 3.x is a processor. Names differ between generations ("Inlet Temp" vs "Ambient Temp",
     "Fan1A RPM" vs "FAN MOD 1A RPM"), so inlet/exhaust are matched by pattern."""
@@ -105,7 +139,10 @@ def parse_sdr(text, thresholds=None):
                           "cpu": entity.startswith("3.") or bool(re.match(r"CPU\d* Temp", name)),
                           "ok": status == "ok", "warn": warns[n] if n < len(warns) else None})
         elif unit == "RPM":
-            fans.append({"name": re.sub(r"\s*RPM$", "", name), "rpm": int(value), "pct": None, "ok": status == "ok"})
+            n = seen[name] = seen.get(name, -1) + 1
+            floors = (fan_floors or {}).get(name, [])
+            fans.append({"name": re.sub(r"\s*RPM$", "", name), "rpm": int(value), "pct": None, "ok": status == "ok",
+                         "floor": floors[n] if n < len(floors) else None})
         elif unit == "Watts" and watts is None:
             watts = value
     return finish(temps, fans, watts)
@@ -135,9 +172,11 @@ def parse_redfish(thermal, power=None):
             continue
         unit = (f.get("ReadingUnits") or f.get("Units") or "").lower()
         is_pct = unit.startswith("percent") or (not unit and reading <= 100)
+        low = f.get("LowerThresholdNonCritical") or f.get("LowerThresholdCritical")
         fans.append({"name": f.get("Name") or f.get("FanName") or "Fan",
                      "rpm": None if is_pct else int(reading), "pct": int(reading) if is_pct else None,
-                     "ok": (f.get("Status") or {}).get("Health", "OK") in ("OK", None)})
+                     "ok": (f.get("Status") or {}).get("Health", "OK") in ("OK", None),
+                     "floor": float(low) if not is_pct and isinstance(low, (int, float)) and low > 0 else None})
     watts = None
     for pc in (power or {}).get("PowerControl", []):
         if pc.get("PowerConsumedWatts") is not None:
@@ -174,6 +213,22 @@ class Driver:
     def set_pcie(self, enabled):
         raise DriverError("not supported")
 
+    exact_speed = False  # set_speed() sets the duty itself (not a cap), so a speed always gives the same RPM
+    notice = None        # something the driver decided that the event log should show, taken once by the server
+
+    def retake(self, pct):
+        """Take the fans back from a BMC that may have gone back to its own control: after the host
+        powers on, after the BMC was unreachable, and when the fans stop following."""
+        self.set_speed(pct)
+
+    def sel(self):
+        """The BMC's System Event Log: {used_pct, entries, recent: [[id, date, time, sensor, event, direction], ...]},
+        newest first."""
+        raise DriverError("this server's event log is not read here; use the BMC's own web page")
+
+    def clear_sel(self):
+        raise DriverError("this server's event log is not cleared here; use the BMC's own web page")
+
     def diagnose(self):
         """What the BMC answers, as raw as possible, for a bug report about hardware this was never
         tested on. Serial numbers, addresses and the like are taken out (see redact)."""
@@ -195,25 +250,58 @@ class IPMIDriver(Driver):
     description = "Any BMC that answers IPMI over LAN: temperatures, fans and power. Monitoring only."
     monitor_reason = "IPMI has no standard command for fan speed"
 
-    def ipmi(self, *args, timeout=20):
-        if self.host == "local":
-            cmd = ["ipmitool", "-I", "open", *args]
-        else:
-            # -E reads the password from IPMI_PASSWORD so it never shows up in `ps`
-            cmd = ["ipmitool", "-I", "lanplus", "-H", self.host, "-U", self.username, "-E", *args]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                               env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise DriverError(str(e)) from e
-        if r.returncode != 0:
+    def ipmi(self, *args, timeout=20, partial=False):
+        """Run ipmitool. partial: keep what it printed even when it exits with an error, for listings
+        where one unreadable sensor fails the whole command after every other line came out."""
+        r = self.run_ipmitool(args, timeout)
+        if (r.returncode != 0 and self.cipher is None and not self.cipher_tried and self.host != "local"
+                and "RMCP+" in (r.stderr or r.stdout)):
+            # newer ipmitool asks for cipher suite 17, which some BMCs list but cannot do: try 3 once
+            self.cipher_tried, self.cipher = True, 3
+            retry = self.run_ipmitool(args, timeout)
+            if retry.returncode == 0:
+                r = retry
+                self.notice = ("The BMC refused ipmitool's default cipher suite; cipher suite 3 works and is used "
+                               "(set it in the server's connection settings to skip the first try after a restart)")
+            else:
+                self.cipher = None
+        if r.returncode != 0 and not (partial and r.stdout.strip()):
             msg = (r.stderr or r.stdout).strip() or f"ipmitool exit {r.returncode}"
             hint = next((h for code, h in HINTS.items() if code in msg), None)
             raise DriverError(f"{msg} ({hint})" if hint else msg)
         return r.stdout
 
+    def sel(self):
+        return parse_sel(self.ipmi("sel", "info"), self.ipmi("sel", "elist", "last", str(SEL_RECENT), timeout=40))
+
+    def clear_sel(self):
+        self.ipmi("sel", "clear")
+
+    cipher = None         # IPMI cipher suite (-C); None: ipmitool's default, then 3 if that fails
+    cipher_tried = False
+
+    def run_ipmitool(self, args, timeout):
+        if self.host == "local":
+            cmd = ["ipmitool", "-I", "open"]
+        else:
+            # -E reads the password from IPMI_PASSWORD so it never shows up in `ps`
+            cmd = ["ipmitool", "-I", "lanplus", "-H", bare_host(self.host), "-U", self.username, "-E"]
+            if bare_host(self.host) != self.host.strip("[]"):
+                cmd += ["-p", self.host.rsplit(":", 1)[1]]
+            if self.cipher is not None:
+                cmd += ["-C", str(self.cipher)]
+        try:
+            return subprocess.run(cmd + list(args), capture_output=True, text=True, timeout=timeout,
+                                  env={"PATH": os.environ.get("PATH", ""), "IPMI_PASSWORD": self.password})
+        except subprocess.TimeoutExpired as e:
+            raise DriverError(f"ipmitool {args[0]} timed out after {timeout} s") from e
+        except OSError as e:
+            raise DriverError(f"ipmitool: {e.strerror or e}") from e
+
     thresholds = None  # read once: `ipmitool sensor` is slow and thresholds don't change
     thresholds_at = 0  # when they were last tried, to retry a failed read every 10 min
+    thresholds_error = ""  # why they could not be read, for the log
+    fan_floors = None  # each fan's lower RPM threshold, read with the temperature thresholds
 
     def diagnose(self):
         out = {}
@@ -225,15 +313,26 @@ class IPMIDriver(Driver):
                 out["ipmitool " + " ".join(args)] = f"error: {e}"
         return out
 
+    reads = 0
+
     def read(self):
-        if self.thresholds is None or (not self.thresholds and time.time() - self.thresholds_at > 600):
+        self.reads += 1
+        # `ipmitool sensor` can take a minute: the first reading goes straight to the fans (which a crash
+        # may have left low), and the thresholds come with the second
+        if self.reads > 1 and (self.thresholds is None or (not self.thresholds and time.time() - self.thresholds_at > 600)):
             self.thresholds_at = time.time()
             try:
-                self.thresholds = parse_thresholds(self.ipmi("sensor", timeout=60))
-            except DriverError:
-                self.thresholds = {}
-        data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds)
-        data["power"] = "on" if "is on" in self.ipmi("chassis", "power", "status") else "off"
+                # iDRACs list every sensor, then exit 1 over one they cannot read (an empty CPU socket's,
+                # a PSU's): the list is still good
+                text = self.ipmi("sensor", timeout=90, partial=True)
+                self.thresholds, self.fan_floors = parse_thresholds(text), parse_fan_floors(text)
+                self.thresholds_error = "" if self.thresholds else "no temperature sensor in `ipmitool sensor`"
+            except DriverError as e:
+                self.thresholds, self.thresholds_error = {}, str(e)
+        data = parse_sdr(self.ipmi("sdr", "elist", "full"), self.thresholds, self.fan_floors)
+        status = self.ipmi("chassis", "power", "status")
+        # "unknown" while the BMC is busy is not "off": that would hand the fans over and fake a power-on
+        data["power"] = "on" if "is on" in status else "off" if "is off" in status else None
         if self.model is None:
             try:
                 fru = self.ipmi("fru", "print", "0")
@@ -253,12 +352,23 @@ class DellDriver(IPMIDriver):
     pcie = True
     monitor_reason = ""
 
+    exact_speed = True
+
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.fan_ids = None  # None: the 0xff broadcast works; list: per-fan identifiers
 
     def set_auto(self):
         self.ipmi("raw", "0x30", "0x30", "0x01", "0x01")
+
+    def retake(self, pct):
+        # An iDRAC can take the fans back while the host starts and then ignore the manual-mode command
+        # sent every cycle (reported on an R420, iDRAC 7). Let go first, then take hold again; and look
+        # for the fans afresh, since one refused all-fans selector during start-up must not leave the
+        # fans set one by one, perhaps by the wrong identifiers, for good.
+        self.fan_ids = None
+        self.set_auto()
+        self.set_speed(pct)
 
     def set_speed(self, pct):
         self.ipmi("raw", "0x30", "0x30", "0x01", "0x00")
@@ -291,6 +401,8 @@ class DellDriver(IPMIDriver):
         if not ids:
             raise DriverError("the iDRAC refused every fan identifier (rsp=0xcc)")
         self.fan_ids = ids
+        self.notice = (f"The iDRAC refused the all-fans command; fans {', '.join(str(i) for i in ids)} are set one by one "
+                       "(tried again with all fans whenever control is taken back)")
 
     def set_pcie(self, enabled):
         self.ipmi("raw", "0x30", "0xce", "0x00", "0x16", "0x05", "0x00", "0x00", "0x00",
@@ -306,6 +418,7 @@ class SupermicroDriver(IPMIDriver):
     min_speed = 25  # below about this many fans read under their lower critical RPM and the BMC goes to full
     control = True
     experimental = True
+    exact_speed = True
     monitor_reason = ""
 
     REASSERT = 600  # switch to Full mode again every 10 min, in case the BMC was reset
@@ -331,7 +444,7 @@ class SupermicroDriver(IPMIDriver):
         try:
             mode = int(self.ipmi("raw", "0x30", "0x45", "0x00").split()[0], 16)
         except (DriverError, ValueError, IndexError):
-            mode = 2
+            return  # not known: Optimal for now, read again next time, and never saved as the user's choice
         self.original = 2 if mode == 1 or mode not in self.MODES else mode  # Full is ours, not theirs
         try:
             with open(self.mode_file, "w", encoding="utf-8") as f:
@@ -339,7 +452,12 @@ class SupermicroDriver(IPMIDriver):
         except OSError:
             pass
 
+    def retake(self, pct):
+        self.full_since = None  # Full mode again now, not at the next 10-minute re-assertion
+        self.set_speed(pct)
+
     def set_auto(self):
+        self.remember_mode()  # a hand-back before any take-over must not replace HeavyIO with Optimal
         self.full_since = None
         mode = 2 if self.original is None else self.original
         self.ipmi("raw", "0x30", "0x45", "0x01", f"0x{mode:02x}")
@@ -454,6 +572,14 @@ class RedfishDriver(Driver):
         self.paths = None  # discovered once: thermal, power, system
 
     def get(self, path):
+        if not str(path).startswith("/"):  # a path from the BMC glued to the host must stay on that host
+            raise DriverError(f"Redfish: refusing the path {str(path)[:60]!r}")
+        try:
+            return self._get(path)
+        except http.client.HTTPException as e:  # a truncated answer is a failed reading, not a crash
+            raise DriverError(f"Redfish {path}: {e!r}") from e
+
+    def _get(self, path, method="GET", body=None):
         if self.verify_tls:
             https = urllib.request.HTTPSHandler(context=ssl.create_default_context())
         elif self.pin:
@@ -463,12 +589,14 @@ class RedfishDriver(Driver):
             https = urllib.request.HTTPSHandler(context=ssl._create_unverified_context())  # noqa: S323
         token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         host = f"[{self.host}]" if self.host.count(":") > 1 and not self.host.startswith("[") else self.host
-        req = urllib.request.Request(f"https://{host}{path}", headers={
-            "Authorization": f"Basic {token}", "Accept": "application/json", "OData-Version": "4.0"})
+        req = urllib.request.Request(f"https://{host}{path}", method=method,
+                                     data=None if body is None else json.dumps(body).encode(), headers={
+            "Authorization": f"Basic {token}", "Accept": "application/json", "OData-Version": "4.0",
+            **({"Content-Type": "application/json"} if body is not None else {})})
         opener = urllib.request.build_opener(https, SameOriginRedirect)
         try:
             with opener.open(req, timeout=self.timeout) as r:
-                return json.loads(r.read(5_000_000))
+                return json.loads(r.read(5_000_000) or b"{}")
         except urllib.error.HTTPError as e:
             raise DriverError(f"Redfish {path}: HTTP {e.code} {e.reason}"
                               + (" (check the user name and password)" if e.code == 401 else "")) from e
@@ -478,6 +606,43 @@ class RedfishDriver(Driver):
             if isinstance(getattr(e, "reason", None), CertificateChanged):
                 raise DriverError(str(e.reason)) from e
             raise DriverError(f"Redfish {path}: {getattr(e, 'reason', e)}") from e
+
+    # ---- Dell iDRAC 9 from firmware 3.34 and iDRAC 10: no fan commands, but the iDRAC's own thermal
+    # settings can make it quieter. The iDRAC keeps control, so this is safe by design; it is set once,
+    # not driven. Only the settings this iDRAC lists are shown, and only known values are written.
+    DELL_ATTRIBUTES = "/redfish/v1/Managers/iDRAC.Embedded.1/Attributes"
+    PROFILE = {"ThermalProfile": ("Default Thermal Profile Settings", "Maximum Performance", "Minimum Power"),
+               "FanSpeedOffset": ("Off", "Low", "Medium", "High", "Max"),
+               "ThirdPartyPCIFanResponse": ("Enabled", "Disabled"),
+               "MinimumFanSpeed": None}  # a number between the iDRAC's own limits, or 255 for its default
+
+    def bmc_profile(self):
+        """The iDRAC's thermal settings: {setting: value, "limits": [min, max]}. DriverError when not a Dell."""
+        attrs = self.get(self.DELL_ATTRIBUTES).get("Attributes") or {}
+        out = {k: attrs[f"ThermalSettings.1.{k}"] for k in self.PROFILE if f"ThermalSettings.1.{k}" in attrs}
+        if not out:
+            raise DriverError("this BMC has no Dell thermal settings")
+        lo, hi = attrs.get("ThermalSettings.1.MFSMinimumLimit"), attrs.get("ThermalSettings.1.MFSMaximumLimit")
+        out["limits"] = [lo, hi] if isinstance(lo, int) and isinstance(hi, int) else None
+        return out
+
+    def set_bmc_profile(self, values):
+        current = self.bmc_profile()
+        changes = {}
+        for k, v in (values or {}).items():
+            if k not in self.PROFILE or k not in current:
+                raise ValueError(f"{k} is not a thermal setting this iDRAC has")
+            if k == "MinimumFanSpeed":
+                lo, hi = current["limits"] or (0, 100)
+                if not (type(v) is int and (lo <= v <= hi or v == 255)):
+                    raise ValueError(f"the minimum fan speed must be from {lo} to {hi} %, or 255 for the iDRAC's default")
+            elif v not in self.PROFILE[k]:
+                raise ValueError(f"{k} must be one of: {', '.join(self.PROFILE[k])}")
+            if v != current[k]:
+                changes[f"ThermalSettings.1.{k}"] = v
+        if changes:
+            self._get(self.DELL_ATTRIBUTES, "PATCH", {"Attributes": changes})
+        return changes
 
     def diagnose(self):
         out = {}
@@ -503,8 +668,51 @@ class RedfishDriver(Driver):
         chassis = self.get("/redfish/v1/Chassis")["Members"][0]["@odata.id"]
         c = self.get(chassis)
         systems = self.get("/redfish/v1/Systems")["Members"][0]["@odata.id"]
+        # Thermal and Power are deprecated: newer BMCs (OpenBMC, iDRAC 10) may only have ThermalSubsystem,
+        # Sensors and EnvironmentMetrics, which are read instead when Thermal is not there
+        modern = not c.get("Thermal") and c.get("ThermalSubsystem")
         self.paths = {"thermal": (c.get("Thermal") or {}).get("@odata.id", chassis.rstrip("/") + "/Thermal"),
-                      "power": (c.get("Power") or {}).get("@odata.id"), "system": systems}
+                      "power": (c.get("Power") or {}).get("@odata.id"), "system": systems,
+                      "subsystem": c["ThermalSubsystem"]["@odata.id"] if modern else None,
+                      "sensors": (c.get("Sensors") or {}).get("@odata.id") if modern else None,
+                      "metrics": (c.get("EnvironmentMetrics") or {}).get("@odata.id") if modern else None}
+
+    def members(self, path):
+        """The members of a collection, expanded in one request where the BMC can, else one by one."""
+        col = self.get(path + "?$expand=.($levels=1)")
+        rows = col.get("Members", [])
+        if rows and set(rows[0]) <= {"@odata.id"}:
+            rows = [self.get(m["@odata.id"]) for m in rows[:64]]
+        return rows
+
+    def thermal_subsystem(self):
+        """ThermalSubsystem fans and Sensors temperatures, in the shape of the older Thermal resource,
+        so one parser reads both."""
+        fans = []
+        for f in self.members(self.paths["subsystem"].rstrip("/") + "/Fans"):
+            speed = f.get("SpeedPercent") or {}
+            rpm, pct = speed.get("SpeedRPM"), speed.get("Reading")
+            if rpm is None and pct is None:
+                continue
+            fans.append({"Name": f.get("Name") or f.get("Id") or "Fan", "Status": f.get("Status") or {},
+                         "Reading": rpm if rpm is not None else pct, "ReadingUnits": "RPM" if rpm is not None else "Percent"})
+        temps = []
+        for s in self.members(self.paths["sensors"]) if self.paths["sensors"] else []:
+            if s.get("ReadingType") != "Temperature" or s.get("Reading") is None:
+                continue
+            limits = s.get("Thresholds") or {}
+            temps.append({"Name": s.get("Name") or s.get("Id"), "ReadingCelsius": s["Reading"],
+                          "PhysicalContext": s.get("PhysicalContext") or "", "Status": s.get("Status") or {},
+                          "UpperThresholdNonCritical": (limits.get("UpperCaution") or {}).get("Reading"),
+                          "UpperThresholdCritical": (limits.get("UpperCritical") or {}).get("Reading")})
+        watts = None
+        if self.paths["metrics"]:
+            try:
+                watts = ((self.get(self.paths["metrics"]).get("PowerWatts") or {}).get("Reading"))
+            except DriverError:
+                pass
+        power = {"PowerControl": [{"PowerConsumedWatts": watts}]} if watts is not None else None
+        return {"Fans": fans, "Temperatures": temps}, power
 
     def read(self):
         if self.paths is None:
@@ -512,17 +720,23 @@ class RedfishDriver(Driver):
                 self.discover()
             except (KeyError, IndexError, TypeError) as e:
                 raise DriverError(f"unexpected Redfish layout: {e!r}") from e
-        thermal = self.get(self.paths["thermal"])
-        power = None
-        if self.paths["power"]:
+        if self.paths.get("subsystem"):
+            thermal, power = self.thermal_subsystem()
+        else:
+            thermal = self.get(self.paths["thermal"])
+            power = None
+        if self.paths["power"] and power is None:
             try:
                 power = self.get(self.paths["power"])
             except DriverError:
                 pass  # not every BMC reports power; temperatures still count
         system = self.get(self.paths["system"])
         self.model = system.get("Model") or self.model
-        temps, fans, watts = parse_redfish(thermal, power)
-        state = (system.get("PowerState") or "").lower()
+        try:
+            temps, fans, watts = parse_redfish(thermal, power)
+            state = (system.get("PowerState") or "").lower()
+        except (TypeError, KeyError, ValueError, AttributeError) as e:  # an odd answer is a failed reading
+            raise DriverError(f"unexpected Redfish answer: {e!r}") from e
         return finish(temps, fans, watts, "on" if state == "on" else "off" if state == "off" else None)
 
 
@@ -552,8 +766,10 @@ class ILO4UnlockedDriver(RedfishDriver):
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                env={"PATH": os.environ.get("PATH", ""), "SSHPASS": self.password})
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise DriverError(f"SSH: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise DriverError("SSH: timed out after 30 s") from e
+        except OSError as e:
+            raise DriverError(f"SSH: {e.strerror or e}") from e
         out = (r.stdout + r.stderr).strip()
         if r.returncode != 0 or "invalid command" in out.lower() or "unknown command" in out.lower():
             raise DriverError("SSH: " + (out or f"exit {r.returncode}")
@@ -562,7 +778,7 @@ class ILO4UnlockedDriver(RedfishDriver):
 
     def read(self):
         data = super().read()
-        self.fan_count = len(data["fans"]) or self.fan_count
+        self.fan_count = max(len(data["fans"]), self.fan_count or 0) or None  # a fan gone keeps its PWM capped
         return data
 
     def diagnose(self):
@@ -592,6 +808,10 @@ class ILO4UnlockedDriver(RedfishDriver):
         self.sent = None
         self.caps(255)  # no cap: the iLO decides. A failure raises: a low cap left behind must be heard of
 
+    def retake(self, pct):
+        self.sent = None  # an iLO that restarted forgot the caps: send them now, not at the next re-send
+        self.set_speed(pct)
+
 
 # ---------------------------------------------------------------- demo
 
@@ -603,6 +823,8 @@ class DemoDriver(Driver):
     control = True
     pcie = True
     needs_host = False
+
+    exact_speed = True
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -626,7 +848,8 @@ class DemoDriver(Driver):
                  f"Temp | 0Fh | ok | 3.2 | {cpu - 3:.0f} degrees C",
                  f"Pwr Consumption | 77h | ok | 7.1 | {100 + cpu + random.uniform(-2, 2):.0f} Watts"]
         lines += [f"Fan{i} RPM | 3{i}h | ok | 7.1 | {rpm + random.randint(-60, 60)} RPM" for i in range(1, 7)]
-        data = parse_sdr("\n".join(lines), {"Inlet Temp": [42.0], "Exhaust Temp": [70.0], "Temp": [90.0, 90.0]})
+        data = parse_sdr("\n".join(lines), {"Inlet Temp": [42.0], "Exhaust Temp": [70.0], "Temp": [90.0, 90.0]},
+                         {f"Fan{i} RPM": [600.0] for i in range(1, 7)})
         data["power"] = "on"
         return data
 
@@ -637,6 +860,15 @@ class DemoDriver(Driver):
         self.speed = pct
 
     def set_pcie(self, enabled):
+        pass
+
+    def sel(self):
+        return parse_sel("Entries          : 3\nPercent Used     : 1%\n",
+                         "   1 | 10/14/2026 | 08:12:40 | Power Supply #0x62 | Presence detected | Asserted\n"
+                         "   2 | 10/15/2026 | 23:41:07 | Fan #0x30 | Lower Critical going low  | Asserted\n"
+                         "   3 | 10/15/2026 | 23:41:12 | Fan #0x30 | Lower Critical going low  | Deasserted")
+
+    def clear_sel(self):
         pass
 
 
@@ -673,7 +905,8 @@ def suggest(vendor, product, firmware):
     return None, "The BMC did not say who made it."
 
 
-SENSITIVE = re.compile(r"serial|uuid|asset|mac|password|hostname|fqdn|ipv4|ipv6|address|sku|partnumber|location", re.I)
+SENSITIVE = re.compile(r"serial|uuid|asset|mac|password|hostname|fqdn|ipv4|ipv6|address|sku|partnumber|location"
+                       r"|servicetag|nodeid|expressservice", re.I)
 
 
 def redact(obj):
@@ -748,6 +981,8 @@ def scan_targets(cidr):
     is not what this is for."""
     import ipaddress
     net = ipaddress.ip_network(cidr.strip(), strict=False)
+    if net.version == 6 and net.subnet_of(ipaddress.ip_network("::ffff:0:0/96")):
+        raise ValueError("write IPv4 ranges as IPv4, e.g. 192.168.1.0/24")
     if not (net.is_private or net.is_link_local) or net.is_loopback:
         raise ValueError("only private ranges can be scanned, e.g. 192.168.1.0/24")
     if net.num_addresses > SCAN_LIMIT + 2:

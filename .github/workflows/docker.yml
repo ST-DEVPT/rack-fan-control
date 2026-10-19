@@ -87,6 +87,8 @@ jobs:
         run: |
           docker stop -t 60 fanctl
           docker logs fanctl 2>&1 | grep -q "handing fans back to automatic control"
+          ! docker logs fanctl 2>&1 | grep -q "could not hand the fans back"
+          test "$(docker inspect -f '{{.State.ExitCode}}' fanctl)" = 0  # not killed at the grace period
       - name: Vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
