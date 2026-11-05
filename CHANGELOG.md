@@ -3,6 +3,12 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.2] - 2026-11-05
+
+- **`FanControlLoopStalled` no longer fires on a healthy server.** Since 2.9.5 the
+  `fanctl_loop_last_tick_timestamp_seconds` metric held the watchdog's monotonic clock instead of Unix time, so the
+  alert rule read every loop as stalled, and a real stall looked the same. The watchdog itself was not affected.
+
 ## [2.13.1] - 2026-10-19
 
 - The image runs on Python 3.14 (Alpine), and the unit tests run on 3.10 to 3.14.

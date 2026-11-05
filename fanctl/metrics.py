@@ -1,5 +1,7 @@
 """Prometheus metrics: every reading of every server, in the text exposition format."""
 
+import time
+
 from .alerts import SENT
 from .config import VERSION
 
@@ -41,8 +43,9 @@ def metrics(servers):
         add("fanctl_inlet_temperature_celsius", "Inlet air temperature.", lbl, sens.get("inlet"))
         add("fanctl_exhaust_temperature_celsius", "Exhaust air temperature.", lbl, sens.get("exhaust"))
         add("fanctl_power_watts", "System power draw.", lbl, sens.get("watts"))
+        # s.tick is on the monotonic clock, for the watchdog; the metric is Unix time, for time() in Prometheus
         add("fanctl_loop_last_tick_timestamp_seconds", "Unix time the control loop last turned; stalls show here.",
-            lbl, s.tick)
+            lbl, time.time() - (time.monotonic() - s.tick))
         for key, help_ in (("bmc_errors", "Failed BMC readings."), ("fan_commands", "Fan commands the BMC accepted."),
                            ("fan_commands_refused", "Fan commands the BMC refused."),
                            ("failsafe_trips", "Times the failsafe handed the fans to the BMC.")):

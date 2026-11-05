@@ -478,6 +478,24 @@ class HTTP(Base):
         self.assertIn("fanctl_alerts_sent_total", text)
         self.assertEqual(self.req("GET", "/static/prometheus-alerts.yml")[0], 200)
 
+    def test_the_stalled_loop_alert_sees_how_long_ago_the_loop_turned(self):
+        # the rule in prometheus-alerts.yml: time() - fanctl_loop_last_tick_timestamp_seconds > 300
+        srv = SERVERS["rack-a"]
+        real = srv.tick
+
+        def age():
+            text = self.req("GET", "/metrics", headers={"Authorization": "Bearer m-token"})[2].decode()
+            line = next(r for r in text.splitlines() if r.startswith('fanctl_loop_last_tick_timestamp_seconds{server="rack-a"'))
+            return time.time() - float(line.rsplit(" ", 1)[1])
+
+        try:
+            srv.tick = time.monotonic() - 10
+            self.assertAlmostEqual(age(), 10, delta=5)    # turning: no alert
+            srv.tick = time.monotonic() - 400
+            self.assertAlmostEqual(age(), 400, delta=5)   # stalled: the alert fires
+        finally:
+            srv.tick = real
+
     def test_integrations(self):
         st, _, data = self.get("/api/integrations")
         ig = json.loads(data)
