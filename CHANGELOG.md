@@ -3,6 +3,13 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.4] - 2026-11-16
+
+- **The image takes Alpine's security fixes when it is built.** The base image is pinned by digest, and Alpine
+  had already fixed musl (CVE-2026-107891) and zlib (CVE-2026-85091) in packages the pinned image did not have
+  yet; the build now upgrades them instead of waiting for the digest to move.
+- 2.13.3 was not published: its image failed the vulnerability scan for that reason. Its change ships here.
+
 ## [2.13.3] - 2026-11-16
 
 - **Fan calibration waits for each speed to settle.** A BMC's power reading is often a slow average, so measuring

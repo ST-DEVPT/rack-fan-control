@@ -5,9 +5,12 @@ FROM python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d75060
 # tzdata: quiet hours follow the TZ variable.
 # pip and setuptools only install packages, and Fan Control installs none: they go, with the libraries
 # they bundle (urllib3, msgpack...) and whatever vulnerabilities those carry.
+# apk upgrade: Alpine fixes a library (musl, zlib...) days before the pinned base image is rebuilt and
+# Dependabot moves the digest; every build takes those fixes instead of shipping a known hole meanwhile.
 RUN python -m pip uninstall -y pip setuptools wheel; \
     rm -rf /usr/local/lib/python3*/ensurepip /root/.cache; \
-    apk add --no-cache ipmitool openssh-client sshpass tzdata \
+    apk upgrade --no-cache \
+ && apk add --no-cache ipmitool openssh-client sshpass tzdata \
  && adduser -D -H -u 1000 app \
  && mkdir /data && chown app:app /data
 
