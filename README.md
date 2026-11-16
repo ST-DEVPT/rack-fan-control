@@ -353,8 +353,9 @@ whole day. When several are in force, the lowest cap and the lowest target win, 
 ### Fan calibration
 
 **Calibrate fans**, under the server's fan list, finds what the minimum speed is best set to. It steps the
-fans from 100 % down to 0 % (12 steps, about 6 minutes, loud at first), measures each fan's RPM and the
-server's power draw at every step, and draws the curve. It then says below which speed the fans turn no
+fans from 100 % down to 0 % (12 steps, 7 to 25 minutes, loud at first), measures each fan's RPM and the
+server's power draw at every step, and draws the curve. A BMC's power reading is often a slow average, so each
+step waits until the RPM and the power draw hold still (up to 2 minutes) before it is measured. It then says below which speed the fans turn no
 slower (many fans have a floor of their own, so a lower setting only adds risk), the lowest speed at which
 every fan kept turning, and how many watts the fans cost at full speed; **Use N % as minimum speed** puts
 that into the settings. From the same measurements it estimates what the fans draw now (and in kWh a

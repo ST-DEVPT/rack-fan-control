@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.3] - 2026-11-16
+
+- **Fan calibration waits for each speed to settle.** A BMC's power reading is often a slow average, so measuring
+  15 to 25 s after a new speed caught the power draw still on its way, and the fans' cost came out too low. Each
+  step now waits until four readings in a row agree on the power (within 3 W or 2 %) and every fan's RPM (within
+  3 %), for at most 2 minutes; a step that never settles is still measured, and the log names it. A calibration
+  takes 7 to 25 minutes instead of about 6.
+
 ## [2.13.2] - 2026-11-05
 
 - **`FanControlLoopStalled` no longer fires on a healthy server.** Since 2.9.5 the

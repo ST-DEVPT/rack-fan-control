@@ -79,10 +79,10 @@ const PT = {
   "Server model": "Modelo do servidor", "Nothing is shared yet.": "Ainda não partilha nada.", "Widgets updated": "Widgets atualizados",
   "Could not save": "Não foi possível guardar",
   "Calibrate fans": "Calibrar ventoinhas", "Stop": "Parar", "Calibration started": "Calibração iniciada",
-  "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.":
-    "Leva as ventoinhas de 100 % a 0 % por passos e mede cada velocidade, para encontrar o mínimo mais baixo que vale a pena definir. Cerca de 6 minutos, com muito ruído no início; todas as proteções continuam ativas.",
-  "Calibrate the fans? They run from 100 % down to 0 % for about 6 minutes, loud at first.":
-    "Calibrar as ventoinhas? Vão de 100 % a 0 % durante cerca de 6 minutos, com muito ruído no início.",
+  "Steps the fans from 100 % down to 0 % and measures each speed once its readings hold still, to find the lowest minimum worth setting. 7 to 25 minutes, loud at first; every protection stays on.":
+    "Leva as ventoinhas de 100 % a 0 % por passos e mede cada velocidade quando as leituras estabilizam, para encontrar o mínimo mais baixo que vale a pena definir. Entre 7 e 25 minutos, com muito ruído no início; todas as proteções continuam ativas.",
+  "Calibrate the fans? They run from 100 % down to 0 % for 7 to 25 minutes, loud at first.":
+    "Calibrar as ventoinhas? Vão de 100 % a 0 % durante 7 a 25 minutos, com muito ruído no início.",
   "Fan RPM at each speed": "RPM das ventoinhas em cada velocidade",
   "Download this range as a spreadsheet": "Descarregar este período como folha de cálculo",
   "this server is monitored only": "este servidor só é monitorizado", "a calibration is already running": "já está a decorrer uma calibração",
@@ -459,8 +459,12 @@ const PT_PATTERNS = [
   [/^the failsafe took over \((.+)\)$/, "o failsafe assumiu o controlo ($1)"], [/^the CPU warmed by (.+)$/, "o CPU aqueceu $1"],
   [/^stopped by (.+)$/, "parado por $1"],
   [/^[Ff]an calibration, step (\d+) of (\d+): (\d+)%$/, "calibração das ventoinhas, passo $1 de $2: $3%"],
-  [/^Fan calibration started by (.+): about (\d+) min$/, "Calibração das ventoinhas iniciada por $1: cerca de $2 min"],
-  [/^Fan calibration started: about (\d+) min$/, "Calibração das ventoinhas iniciada: cerca de $1 min"],
+  [/^Fan calibration started by (.+): (\d+) to (\d+) min, each step waiting for the RPM and the power draw to hold still$/,
+    "Calibração das ventoinhas iniciada por $1: $2 a $3 min, cada passo à espera que as RPM e o consumo estabilizem"],
+  [/^Fan calibration started: (\d+) to (\d+) min, each step waiting for the RPM and the power draw to hold still$/,
+    "Calibração das ventoinhas iniciada: $1 a $2 min, cada passo à espera que as RPM e o consumo estabilizem"],
+  [/^Fan calibration: the readings at (.+) were still moving after (\d+) min; their power draw may be off$/,
+    "Calibração das ventoinhas: as leituras a $1 ainda mexiam ao fim de $2 min; o consumo medido nesses passos pode não estar certo"],
   [/^Fan calibration finished: (\d+) RPM at (\d+)%, (\d+) RPM at (\d+)%; suggested minimum speed (\d+)%$/, "Calibração das ventoinhas concluída: $1 RPM a $2%, $3 RPM a $4%; velocidade mínima sugerida $5%"],
   [/^Fan calibration finished: (\d+) RPM at (\d+)%, (\d+) RPM at (\d+)%; no speed kept every fan turning$/, "Calibração das ventoinhas concluída: $1 RPM a $2%, $3 RPM a $4%; nenhuma velocidade manteve todas as ventoinhas a rodar"],
   [/^Fan calibration stopped at (\d+)%: (.+); every fan kept turning down to (\d+)%$/, "Calibração das ventoinhas parada a $1%: $2; todas as ventoinhas rodaram até $3%"],

@@ -634,7 +634,7 @@ $("#bp-apply").onclick = async () => {
 };
 
 // fan calibration: start it, follow it, and use what it found
-const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed, to find the lowest minimum worth setting. About 6 minutes, loud at first; every protection stays on.";
+const CALIB_HELP = "Steps the fans from 100 % down to 0 % and measures each speed once its readings hold still, to find the lowest minimum worth setting. 7 to 25 minutes, loud at first; every protection stays on.";
 function renderCalib() {
   const c = server.calibration, res = c?.results || [], running = c?.status === "running";
   $("#calib").hidden = !server.control || !(server.sensors?.fans || []).some(f => f.rpm != null);
@@ -672,7 +672,7 @@ function renderCalib() {
   $("#calib-svg").innerHTML = g;
 }
 $("#calib-start").onclick = async () => {
-  if (!confirm(translate("Calibrate the fans? They run from 100 % down to 0 % for about 6 minutes, loud at first."))) return;
+  if (!confirm(translate("Calibrate the fans? They run from 100 % down to 0 % for 7 to 25 minutes, loud at first."))) return;
   const r = await api("/api/calibrate?server=" + encodeURIComponent(server.id), {});
   if (!r.ok) return toast("Could not start: " + await failure(r), true);
   toast("Calibration started");

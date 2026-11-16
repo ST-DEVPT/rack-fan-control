@@ -280,9 +280,13 @@ class Server:
     # step and the failsafe takes over, every step above it is already measured.
 
     CALIB_STEPS = (100, 80, 60, 50, 40, 30, 25, 20, 15, 10, 5, 0)
-    CALIB_SETTLE = 15    # s for the fans to reach a new speed before it is measured
-    CALIB_SAMPLES = 3    # readings averaged at each step
+    CALIB_SETTLE = 20    # s for the fans to reach a new speed before readings count
+    CALIB_SAMPLES = 4    # readings in a row that must agree; their average is the step's measurement
     CALIB_EVERY = 5      # s between readings while it runs
+    CALIB_WAIT = 120     # s at most per step: a BMC's power reading is often a slow average, so a step waits
+                         # until it holds still, and past this takes the last readings as they are
+    CALIB_WATTS_SPREAD = 3     # W (or 2 % of the reading) the power may move across those readings
+    CALIB_RPM_SPREAD = 0.03    # and each fan's RPM, as a share of it
     CALIB_WARMING = 10   # °C the CPU may warm before it stops
     CALIB_STOPPED = 300  # RPM under which a fan counts as stopped (as failed_fans has it)
     CALIB_MARGIN = 1.15  # no slower step once a fan is within 15 % of its BMC minimum
@@ -324,8 +328,11 @@ class Server:
                           "samples": [], "results": [], "reason": "", "floor": None, "suggested": None}
             self.smart = {}
             self.retakes = [now]  # measured fans must be Fan Control's: take hold properly first
-            minutes = round(len(self.calib["steps"]) * (self.CALIB_SETTLE + self.CALIB_SAMPLES * self.CALIB_EVERY) / 60)
-        self.log(f"Fan calibration started{' by ' + who if who else ''}: about {minutes} min")
+            n = len(self.calib["steps"])
+            least = round(n * (self.CALIB_SETTLE + (self.CALIB_SAMPLES - 1) * self.CALIB_EVERY) / 60)
+            most = round(n * (self.CALIB_WAIT + self.CALIB_EVERY) / 60)
+        self.log(f"Fan calibration started{' by ' + who if who else ''}: {least} to {most} min, each step "
+                 "waiting for the RPM and the power draw to hold still")
         self.wake.set()
         return None
 
@@ -358,15 +365,16 @@ class Server:
             if self.state["effective"] != "manual":  # the BMC had them (a dropped reading, a refusal): settle again
                 c["since"], c["samples"] = now, []
             elif now - c["since"] >= self.CALIB_SETTLE:
-                c["samples"].append({"rpm": rpms, "watts": sensors["watts"]})
-                if len(c["samples"]) >= self.CALIB_SAMPLES:
+                c["samples"] = (c["samples"] + [{"rpm": rpms, "watts": sensors["watts"]}])[-self.CALIB_SAMPLES:]
+                steady = self.calib_steady(c["samples"])
+                if len(c["samples"]) >= self.CALIB_SAMPLES and (steady or now - c["since"] >= self.CALIB_WAIT):
                     seen = [s["rpm"] for s in c["samples"]]
                     fans = {n: round(sum(s[n][0] for s in seen if n in s) / sum(n in s for s in seen))
                             for n in sorted({n for s in seen for n in s})}
                     ok = all(s[n][1] for s in seen for n in s) and min(fans.values()) >= self.CALIB_STOPPED
                     watts = [s["watts"] for s in c["samples"] if s["watts"] is not None]
                     c["results"].append({"pct": c["steps"][c["i"]], "rpm": round(sum(fans.values()) / len(fans)),
-                                         "fans": fans, "ok": ok,
+                                         "fans": fans, "ok": ok, "steady": steady,
                                          "watts": round(sum(watts) / len(watts)) if watts else None})
                     c["i"], c["since"], c["samples"] = c["i"] + 1, now, []
                     near = next((n for n, rpm in fans.items() if n in floors and rpm < floors[n] * self.CALIB_MARGIN), None)
@@ -379,6 +387,20 @@ class Server:
                         return None
             pct = c["steps"][c["i"]]
             return pct, f"fan calibration, step {c['i'] + 1} of {len(c['steps'])}: {pct}%"
+
+    def calib_steady(self, samples):
+        """The readings of a step agree: the power and each fan's RPM move less than the allowed spread.
+        A reading the BMC does not give (no power sensor) does not hold the step back."""
+        if len(samples) < self.CALIB_SAMPLES:
+            return False
+        watts = [s["watts"] for s in samples if s["watts"] is not None]
+        if watts and max(watts) - min(watts) > max(self.CALIB_WATTS_SPREAD, 0.02 * max(watts)):
+            return False
+        for n in set.intersection(*(set(s["rpm"]) for s in samples)):
+            rpm = [s["rpm"][n][0] for s in samples]
+            if max(rpm) - min(rpm) > self.CALIB_RPM_SPREAD * max(rpm):
+                return False
+        return True
 
     def finish_calibration(self, status, reason=""):
         """End the calibration ("done" or "stopped"), work out what it found and keep it on disk.
@@ -405,6 +427,10 @@ class Server:
                      f"{res[-1]['pct']}%" + ("; no speed kept every fan turning" if spinning is None else
                                              f"; suggested minimum speed {c['suggested']}%"),
                      "warn" if spinning is None else "info")
+            moving = [r["pct"] for r in res if r.get("steady") is False]
+            if moving:
+                self.log(f"Fan calibration: the readings at {', '.join(f'{p}%' for p in moving)} were still moving after "
+                         f"{self.CALIB_WAIT // 60} min; their power draw may be off", "warn")
         elif reason.startswith("the failsafe took over") and spinning is not None:
             # a fan stopped at this step, or the BMC took over: the steps above it still tell
             c["suggested"] = spinning

@@ -416,6 +416,53 @@ class Calibration(unittest.TestCase):
         srv.cycle()
         self.assertEqual(srv.calls[-1], 30)
 
+    def step(self, srv, watts):
+        """One cycle at the step the calibration is on: fans by its speed, power from watts(speed)."""
+        pct = srv.calib["steps"][srv.calib["i"]]
+        r = reading(self.OK, [{"name": f"Fan{i}", "rpm": 2000 + 40 * pct, "pct": None, "ok": True} for i in (1, 2, 3)])
+        r["watts"] = watts(pct)
+        srv.answers = [r]
+        srv.cycle()
+        return pct
+
+    def test_waits_for_the_power_draw_to_hold_still(self):
+        # a BMC whose power reading is a slow average: after each new speed it climbs for a while
+        srv = Scripted("cal-slow")
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.CALIB_SETTLE = 0
+        self.assertIsNone(srv.start_calibration())
+        seen = []
+        for _ in range(400):
+            if not srv.calibrating():
+                break
+            pct, n = srv.calib["steps"][srv.calib["i"]], 0
+            while n < len(seen) and seen[-1 - n] == pct:  # readings already taken at this speed
+                n += 1
+            seen.append(self.step(srv, lambda p, n=n: 100 + p - max(0, 40 - 10 * n)))  # 40 W short, 10 W closer each reading
+        c = srv.calib
+        self.assertEqual(c["status"], "done")
+        self.assertEqual([r["watts"] for r in c["results"]][:3], [200, 180, 160])     # what each speed really draws
+        self.assertTrue(all(r["steady"] for r in c["results"]))
+        self.assertEqual(c["fan_watts"], 100)
+        self.assertGreaterEqual(seen.count(100), 8)                                  # it waited at each step
+
+    def test_takes_the_last_readings_when_they_never_hold_still(self):
+        srv = Scripted("cal-noisy")
+        srv.answers = [reading(self.OK)]
+        srv.cycle()
+        srv.CALIB_SETTLE, srv.CALIB_WAIT = 0, 0  # no time passes in a test: the longest wait is already over
+        self.assertIsNone(srv.start_calibration())
+        flip = iter(range(10 ** 6))
+        for _ in range(200):
+            if not srv.calibrating():
+                break
+            self.step(srv, lambda p: 150 + 20 * (next(flip) % 2))
+        c = srv.calib
+        self.assertEqual(c["status"], "done")
+        self.assertFalse(any(r["steady"] for r in c["results"]))
+        self.assertTrue(any("were still moving after" in e["msg"] for e in srv.events))
+
     def test_refused_when_it_cannot_be_trusted(self):
         dry = Scripted("cal-dry", {"mode": "fixed", "fixed_speed": 30, "dry_run": True})
         dry.answers = [reading(self.OK)]
