@@ -3,6 +3,11 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.5] - 2026-11-16
+
+- The image runs on Python 3.15 (Alpine), and the unit tests run on 3.10 to 3.15.
+- CI: actions/setup-python 7.1.0, docker/login-action 4.8.0.
+
 ## [2.13.4] - 2026-11-16
 
 - **The image takes Alpine's security fixes when it is built.** The base image is pinned by digest, and Alpine
