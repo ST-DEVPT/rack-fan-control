@@ -3,6 +3,18 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.6] - 2026-11-23
+
+- **A fan that dips under its BMC minimum for a few seconds now raises the floor.** The floor rose only after two
+  readings in a row under the minimum, so a fan that fell for 5 to 6 s and came back, one reading every 5 s, never
+  reached two: an R420's Fan3B did six times in 22 hours, each logged by the BMC as Lower Critical and Redundancy
+  Lost, with no word from Fan Control. Now each fan counts its own readings under the minimum over 30 minutes;
+  two raise the floor to 5 % above the fastest speed they happened at. A single odd reading still does not count,
+  nor does a fan that never turned.
+- **The Fan failed alert catches the same short stops.** It too needed two readings in a row, so a fan that
+  stopped for a few seconds and came back was never reported. Two readings of one fan stopped within 30 minutes
+  now count; as before, a failed fan trips the failsafe, and the BMC keeps the fans for at least 5 minutes.
+
 ## [2.13.5] - 2026-11-16
 
 - The image runs on Python 3.15 (Alpine), and the unit tests run on 3.10 to 3.15.

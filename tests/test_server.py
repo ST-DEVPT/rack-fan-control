@@ -287,6 +287,25 @@ class FailSafe(unittest.TestCase):
         srv.cycle()
         self.assertTrue(srv.state["failsafe"])
 
+    def test_a_fan_that_stops_twice_in_half_an_hour_has_failed(self):
+        # an R420's Fan3B stopped for 5-6 s and came back: one reading each time, never two in a row
+        srv = Scripted("fs-fanstops")
+        srv.answers = [self.r420(), self.r420(), self.r420(0), self.r420(), self.r420(0), self.r420(),
+                       self.r420(0), self.r420(), self.r420(0)]
+        for _ in range(3):
+            srv.cycle()                               # stopped once: one odd reading is not it
+        srv.fan_stops = {n: [t - 1800 for t in ts] for n, ts in srv.fan_stops.items()}
+        srv.cycle()
+        srv.cycle()                                   # again, but 30 min after the first
+        self.assertEqual(srv.fans_failed, set())
+        srv.cycle()
+        srv.cycle()                                   # and again minutes later
+        self.assertIn("Fan Fan3B failed: 0 rpm", " ".join(e["msg"] for e in srv.events))
+        srv.cycle()
+        self.assertEqual((srv.state["reason"], srv.calls[-1]), ("fan Fan3B failed", "auto"))
+        srv.cycle()                                   # spinning again, then one stop: judged afresh
+        self.assertEqual(srv.fans_failed, set())
+
     def test_a_power_state_the_bmc_cannot_tell_is_the_last_one_known(self):
         srv = Scripted("fs-power")
         srv.driver.retake = lambda pct: srv.calls.append(("retake", pct))
@@ -335,6 +354,40 @@ class FailSafe(unittest.TestCase):
         self.assertEqual(srv.calls[-1], 15)
         self.assertIn("BMC fan minimum 15%", srv.state["reason"])
         self.assertIn("under its BMC minimum of 600 RPM", srv.events[1]["msg"] + srv.events[0]["msg"])
+
+    def r420(self, fan3b=4000, fan2b=4000):
+        """An R420 reading: fans with a BMC minimum of 840 RPM, Fan4B an empty bay that never turned."""
+        return reading(self.OK, [{"name": n, "rpm": r, "pct": None, "ok": True, "floor": 840}
+                                 for n, r in (("Fan1B", 4000), ("Fan2B", fan2b), ("Fan3B", fan3b), ("Fan4B", 0))])
+
+    def test_short_dips_of_one_fan_raise_the_floor(self):
+        # an R420's Fan3B fell to 720 RPM for 5-6 s and came back: one reading each time, never two in a row
+        srv = Scripted("fs-rpmdips", {"mode": "fixed", "fixed_speed": 10, "min_speed": 0})
+        srv.answers = [self.r420(), self.r420(), self.r420(720), self.r420(), self.r420(720),
+                       self.r420(), self.r420(), self.r420(720), self.r420(), self.r420(720), self.r420()]
+        for _ in range(4):
+            srv.cycle()                               # one dip, then a normal reading: one odd reading is not it
+        self.assertEqual(srv.rpm_floor, 0)
+        srv.cycle()                                   # the same fan again, minutes later
+        self.assertEqual(srv.rpm_floor, 15)
+        self.assertIn("Fan3B turned 720 RPM at 10%, under its BMC minimum of 840 RPM",
+                      " ".join(e["msg"] for e in srv.events))
+        for _ in range(3):
+            srv.cycle()                               # 15 % sent; one dip at it: judged afresh, not counted with 10 %'s
+        self.assertEqual(srv.rpm_floor, 15)
+        srv.cycle()
+        srv.cycle()                                   # a second one at 15 %
+        self.assertEqual(srv.rpm_floor, 20)
+
+    def test_dips_of_two_fans_or_half_an_hour_apart_do_not(self):
+        srv = Scripted("fs-rpmapart", {"mode": "fixed", "fixed_speed": 10, "min_speed": 0})
+        srv.answers = [self.r420(), self.r420(), self.r420(720), self.r420(fan2b=720), self.r420(720)]
+        for _ in range(4):
+            srv.cycle()                               # Fan3B once, Fan2B once: each fan counts its own
+        self.assertEqual(srv.rpm_floor, 0)
+        srv.floor_dips = {n: [(t - 1800, *d) for t, *d in dips] for n, dips in srv.floor_dips.items()}
+        srv.cycle()                                   # Fan3B again, but 30 min after its first
+        self.assertEqual(srv.rpm_floor, 0)
 
     def test_vendor_floor(self):
         srv = Scripted("fs-floor", {"mode": "fixed", "fixed_speed": 20})
