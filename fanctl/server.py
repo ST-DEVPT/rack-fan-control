@@ -54,7 +54,9 @@ class Server:
         self.inlet_hot = False
         self.failsafe_since = None  # start of the current failsafe, for the "failsafe for N min" alert
         self.failsafe_told = False
-        self.fan_stops = {}    # fan name -> [time, ...] it looked failed, last 30 min (see check_fans)
+        self.fan_strikes = {}  # fan name -> readings in a row it looked failed
+        self.fan_dips = {}     # fan name -> [time, ...] it stopped or read under its BMC minimum (see DIP_WINDOW)
+        self.dips_told = {}    # fan name -> when its dips were last told
         self.fans_failed = set()
         self.spun = set()          # fans seen turning since the start: only those can fail (see check_fans)
         self.fans_missing = {}     # fan that turned -> readings in a row it has been absent
@@ -69,8 +71,6 @@ class Server:
         self.blind_tried = 0       # last attempt to hand the fans back while the BMC could not be read
         self.misses = 0            # readings failed in a row (see READ_MISSES)
         self.told_thresholds = False
-        self.rpm_floor = 0         # % below which a fan read under its BMC minimum (see check_fan_floors)
-        self.floor_dips = {}       # fan -> [(time, speed sent, rpm, its minimum)] under its BMC minimum, last 30 min
         self.retakes = []          # times to take the fans back from the BMC again (see command)
         self.pushed = {}           # host sensors: name -> {"value", "warn", "t"} (see push_sensors)
         self.retook = 0
@@ -128,9 +128,6 @@ class Server:
     CHANGES_KEPT = 20  # settings versions kept per server
 
     def save_settings(self, s, who=""):
-        if s["min_speed"] != self.settings()["min_speed"]:
-            with self.lock:  # a new minimum speed is judged afresh against the fans' BMC minimum
-                self.rpm_floor, self.floor_dips = 0, {}
         write_json(self.settings_file, s)
         rows = self.changes()
         rows.append({"t": round(time.time()), "who": who, "settings": s})
@@ -529,7 +526,7 @@ class Server:
                 with self.lock:  # forget_learned() clears the map from the HTTP thread
                     # while the BMC has the fans, what held the target was not this speed: learn nothing
                     # the hardware's floors are smart mode's floor too, or it learns speeds that were never sent
-                    floor = max(settings["min_speed"], getattr(self.driver, "min_speed", 0), self.rpm_floor)
+                    floor = max(settings["min_speed"], getattr(self.driver, "min_speed", 0))
                     step = {**settings, "min_speed": floor, "dry_run": settings["dry_run"] or self.not_following}
                     target, smart = smart_step(self.smart, self.learned, step, cpu, sensors, now, cap)
                 smart["reason"] = smart["reason"].replace(", quiet hours cap", f", {cap_name} cap")
@@ -664,9 +661,6 @@ class Server:
         if speed < floor:  # below this some BMCs see a stalled fan and go to full speed
             speed = floor
             reason += f", {self.driver.vendor} floor {floor}%"
-        if speed < self.rpm_floor:
-            speed = self.rpm_floor
-            reason += f", BMC fan minimum {speed}%"
         return speed, reason
 
     def command(self, settings, effective, speed, reason, dry):
@@ -749,9 +743,8 @@ class Server:
                 self.log(f"Failsafe cleared at CPU {cpu:.0f}°C" if cpu is not None else "Failsafe cleared")
                 notify(self, "failsafe_cleared", **vals)
             self.check_limits(sensors, cpu, failsafe, vals, now)
-            self.check_fans(sensors["fans"], vals, now)
-            if prev["effective"] == "manual" and not dry and not self.calibrating():
-                self.check_fan_floors(sensors["fans"], prev["applied_speed"], now)
+            ours = prev["effective"] == "manual" and not dry and not self.calibrating()
+            self.check_fans(sensors["fans"], vals, now, prev["applied_speed"] if ours else None)
             self.check_response(effective if not dry else "dry", speed, sensors["fans"], vals)
             manual = prev["effective"] == "manual" and not prev["dry_run"] and not self.calibrating()
             self.check_follow(prev["applied_speed"] if manual else None, sensors["fans"], now, vals)
@@ -855,35 +848,15 @@ class Server:
         if self.not_following and now - self.retook >= self.RETAKE_EVERY and not self.retakes:
             self.retakes = [now]
 
-    # s: a fan stopped or under its BMC minimum in two readings within this counts. One odd reading (a fan
-    # swapped) is not it; but a dip of a few seconds is one reading, so the two need not be in a row.
+    # s: a fan that stops, or reads under its BMC minimum at the speed sent, in two readings within this is
+    # told as failing, once per window. One odd reading (a fan swapped) is not it; but a dip of a few seconds
+    # is one reading, so the two need not be in a row. The speed is left alone: it does not mend a fan.
     DIP_WINDOW = 1800
 
-    def check_fan_floors(self, fans, speed, now):
-        """A fan under its BMC minimum at the speed last sent: the BMC logs it, lights the amber LED and
-        may run every fan at full speed. From then on this server's fans stay 5 % above the fastest speed it
-        did so at, until Fan Control restarts. Called with self.lock held."""
-        if speed is None:
-            return
-        for f in fans:  # an empty bay reads 0 for ever: not a reason to speed up
-            if f.get("floor") and f["rpm"] is not None and f["rpm"] < f["floor"] and f["name"] in self.spun:
-                self.floor_dips.setdefault(f["name"], []).append((now, speed, f["rpm"], f["floor"]))
-        self.floor_dips = {n: kept for n, dips in self.floor_dips.items()
-                           if (kept := [d for d in dips if now - d[0] < self.DIP_WINDOW])}
-        twice = [(d[1], n, d) for n, dips in self.floor_dips.items() if len(dips) >= 2 for d in dips]
-        if not twice:
-            return
-        at, name, (_, _, rpm, floor) = max(twice)
-        if min(60, at + 5) <= self.rpm_floor:  # already there; at the 60 % cap, said once
-            return
-        self.rpm_floor = min(60, at + 5)
-        self.floor_dips = {}  # dips at the old speed say nothing of the new one: it is judged afresh
-        self.log(f"{name} turned {rpm} RPM at {at}%, under its BMC minimum of {floor:.0f} RPM; "
-                 f"the fans stay at {self.rpm_floor}% or more", "warn")
-
-    def check_fans(self, fans, vals, now):
-        """A fan that stops while the others spin, in two readings within DIP_WINDOW.
-        Called with self.lock held."""
+    def check_fans(self, fans, vals, now, speed=None):
+        """A fan that stops while the others spin, two readings in a row: failed, and the failsafe hands the
+        fans to the BMC. Shorter dips: see DIP_WINDOW. speed: the speed sent, None when the fans were not
+        ours to judge (the BMC had them, a dry run, a calibration). Called with self.lock held."""
         self.spun |= {f["name"] for f in fans if (f["rpm"] or 0) >= 300 or (f["pct"] or 0) > 0}
         # A fan at 0 that has not turned since the start is an empty bay or a blank, which some BMCs list:
         # never a failsafe for good. One the BMC itself reports as failed still counts.
@@ -893,19 +866,29 @@ class Server:
         for name in sorted(stopped - now_failed - self.idle_told):
             self.idle_told.add(name)
             self.log(f"Fan {name} reads 0 and has not turned since Fan Control started: taken as an empty bay", "warn")
-        for n in now_failed:
-            self.fan_stops.setdefault(n, []).append(now)
-        self.fan_stops = {n: kept for n, ts in self.fan_stops.items() if (kept := [t for t in ts if now - t < self.DIP_WINDOW])}
+        self.fan_strikes = {n: self.fan_strikes.get(n, 0) + 1 for n in now_failed}
+        low = {f["name"] for f in fans if speed is not None and f.get("floor") and f["rpm"] is not None
+               and f["rpm"] < f["floor"] and f["name"] in self.spun}
+        dipped = now_failed | low
+        for n in dipped:
+            self.fan_dips.setdefault(n, []).append(now)
+        self.fan_dips = {n: kept for n, ts in self.fan_dips.items() if (kept := [t for t in ts if now - t < self.DIP_WINDOW])}
         for f in fans:
-            if len(self.fan_stops.get(f["name"], [])) >= 2 and f["name"] not in self.fans_failed:
-                self.fans_failed.add(f["name"])
-                reading = f"{f['rpm']} rpm" if f["rpm"] is not None else f"{f['pct']}%" if f["pct"] is not None else "a fault"
-                self.log(f"Fan {f['name']} failed: {reading}", "error")
-                notify(self, "fan_failed", **vals, fan=f["name"], rpm=reading)
+            name = f["name"]
+            reading = f"{f['rpm']} rpm" if f["rpm"] is not None else f"{f['pct']}%" if f["pct"] is not None else "a fault"
+            if self.fan_strikes.get(name, 0) >= 2 and name not in self.fans_failed:
+                self.fans_failed.add(name)
+                self.log(f"Fan {name} failed: {reading}", "error")
+                notify(self, "fan_failed", **vals, fan=name, rpm=reading)
+            elif (name in dipped and name not in self.fans_failed and len(self.fan_dips.get(name, [])) >= 2
+                  and now - self.dips_told.get(name, 0) >= self.DIP_WINDOW):
+                self.dips_told[name] = now
+                self.log(f"Fan {name} dropped to {reading} twice in {self.DIP_WINDOW // 60} min: it may be failing", "warn")
+                notify(self, "fan_failed", **vals, fan=name, rpm=reading)
         turning = {f["name"] for f in fans if (f["rpm"] or 0) >= 300 or (f["pct"] or 0) > 0}
         for name in (self.fans_failed - now_failed) & turning:  # gone from the list is not spinning again
             self.fans_failed.discard(name)
-            self.fan_stops.pop(name, None)  # judged afresh from here
+            self.fan_dips.pop(name, None)  # judged afresh from here
             self.log(f"Fan {name} is spinning again")
 
     def check_response(self, effective, speed, fans, vals):

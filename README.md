@@ -286,11 +286,11 @@ their fans would read under the BMC's lower critical RPM. The failsafe can be se
 
 **Each fan's BMC minimum.** The BMC defines a lowest RPM for each fan (`ipmitool sensor`, or Redfish's lower
 thresholds); under it, it logs an event, lights the amber LED and often runs every fan at full speed. The fan
-list shows it next to each fan (`/ ≥600`). When one fan reads under it twice within 30 minutes at the speed
-Fan Control sent (a dip of a few seconds is one reading, so the two need not be in a row; a single odd reading
-does not count), the fans stay 5 % above the fastest of those speeds from then on (until a restart), and the
-event log says so. The minimum speed field
-warns when the calibration shows a fan would turn under its minimum at that speed.
+list shows it next to each fan (`/ ≥600`). When one fan reads under it at the speed Fan Control sent, or
+stops, in two readings within 30 minutes (a dip of a few seconds is one reading, so the two need not be in a
+row; a single odd reading does not count), the event log and the Fan failed alert say it may be failing, at
+most once per half hour. The speed is left as it is: a faster fan does not mend a failing one. The minimum
+speed field warns when the calibration shows a fan would turn under its minimum at that speed.
 
 When the controller hands a Supermicro back, the BMC gets the fan mode it had before (Standard,
 Optimal or HeavyIO), read once and kept in the data folder. On `docker stop` every server is released at
@@ -419,7 +419,7 @@ and every alert (and the status report) links to its server's page. ntfy, Gotify
 | Back to normal | resolved | The BMC answers and accepts commands again |
 | Controller error | error | The control loop hits an unexpected error |
 | Failsafe lasting | error | The BMC has held the fans for longer than the set time (10 min by default) |
-| Fan failed | error | A fan stops while the others spin, or the BMC reports it failed (two readings within 30 minutes) |
+| Fan failed | error | A fan stops while the others spin, or the BMC reports it failed, two readings in a row (the failsafe hands the fans to the BMC); or a fan stops, or drops under its BMC minimum, twice within 30 minutes (told only) |
 | Fan commands ignored | error | The speed moved by 20 points or more and the RPM did not follow, or at a steady speed the fans do not turn as that speed made them (the BMC took them back) |
 | Room running hot | warning | The inlet air passes its warning temperature (35 °C by default) |
 | Settings changed | info | Someone applies new settings (off by default) |

@@ -3,6 +3,15 @@
 Versions follow [semantic versioning](https://semver.org): a major version (`:2`) never removes a setting
 or changes what an existing one does, so pinning the image to it is safe.
 
+## [2.13.7] - 2026-11-28
+
+- **A fan that dips no longer speeds the fans up.** A fan under its BMC minimum raised every fan's speed to 5 %
+  above the speed sent, and 2.13.6 made two short stops trip the failsafe; neither mends a failing fan, both
+  only made the server louder. Now a fan that stops, or reads under its BMC minimum at the speed sent, in two
+  readings within 30 minutes is told in the event log and by the Fan failed alert, at most once per half hour,
+  and the speed is left as it is. A fan stopped in two readings in a row still trips the failsafe, as before
+  2.13.6.
+
 ## [2.13.6] - 2026-11-23
 
 - **A fan that dips under its BMC minimum for a few seconds now raises the floor.** The floor rose only after two
